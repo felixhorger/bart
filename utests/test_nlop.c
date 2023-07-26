@@ -1,9 +1,7 @@
 /* Copyright 2018-2021. Uecker Lab. University Medical Center Göttingen.
+ * Copyright 2021-2023. Insitute of Biomedical Imaging. TU Graz.
  * All rights reserved. Use of this source code is governed by
  * a BSD-style license which can be found in the LICENSE file.
- *
- * Authors:
- * 2017-2018 Martin Uecker <martin.uecker@med.uni-goettingen.de>
  */
 
 #include <complex.h>
@@ -15,6 +13,7 @@
 #include "num/ops.h"
 
 #include "misc/misc.h"
+#include "misc/utils.h"
 #include "misc/debug.h"
 #include "misc/mmio.h"
 
@@ -847,7 +846,7 @@ static bool test_stack_multiple(void)
 	for (int i = 0; i < 3; i++)
 		nlops[i] = nlop_tenmul_create(N, odims_2, idims1_2, idims2_2);
 	
-	const struct nlop_s* nlop1 = nlop_stack_multiple_F(3, nlops, 2, (int[2]){ 2, -1}, 1, (int[1]){ 2 });
+	const struct nlop_s* nlop1 = nlop_stack_multiple_F(3, nlops, 2, (int[2]){ 2, -1}, 1, (int[1]){ 2 }, false, false);
 	const struct nlop_s* nlop2 = nlop_tenmul_create(N, odims_1, idims1_1, idims2_1);
 
 	bool ok = compare_nlops(nlop1, nlop2, true, true, true, UT_TOL);
@@ -876,7 +875,7 @@ static bool test_stack_multiple2(void)
 	for (int i = 0; i < 5; i++)
 		nlops[i] = nlop_tenmul_create(N, odims_2, idims1_2, idims2_2);
 	
-	const struct nlop_s* nlop1 = nlop_stack_multiple_F(5, nlops, 2, (int[2]){ 1, -1}, 1, (int[1]){ 1 });
+	const struct nlop_s* nlop1 = nlop_stack_multiple_F(5, nlops, 2, (int[2]){ 1, -1}, 1, (int[1]){ 1 }, false, false);
 	const struct nlop_s* nlop2 = nlop_tenmul_create(N, odims_1, idims1_1, idims2_1);
 
 	bool ok = compare_nlops(nlop1, nlop2, true, true, true, UT_TOL);
@@ -905,7 +904,7 @@ static bool test_stack_multiple_container(void)
 	for (int i = 0; i < 3; i++)
 		nlops[i] = nlop_tenmul_create(N, odims_2, idims1_2, idims2_2);
 	
-	const struct nlop_s* nlop1 = nlop_stack_container_create_F(3, nlops, 2, (int[2]){ 2, -1}, 1, (int[1]){ 2 });
+	const struct nlop_s* nlop1 = nlop_stack_multiple_F(3, nlops, 2, (int[2]){ 2, -1}, 1, (int[1]){ 2 }, true, false);
 	const struct nlop_s* nlop2 = nlop_tenmul_create(N, odims_1, idims1_1, idims2_1);
 
 	bool ok = compare_nlops(nlop1, nlop2, true, true, true, UT_TOL);
@@ -934,7 +933,7 @@ static bool test_stack_multiple_container2(void)
 	for (int i = 0; i < 5; i++)
 		nlops[i] = nlop_tenmul_create(N, odims_2, idims1_2, idims2_2);
 	
-	const struct nlop_s* nlop1 = nlop_stack_container_create_F(5, nlops, 2, (int[2]){ 1, -1}, 1, (int[1]){ 1 });
+	const struct nlop_s* nlop1 = nlop_stack_multiple_F(5, nlops, 2, (int[2]){ 1, -1}, 1, (int[1]){ 1 }, true, false);
 	const struct nlop_s* nlop2 = nlop_tenmul_create(N, odims_1, idims1_1, idims2_1);
 
 	bool ok = compare_nlops(nlop1, nlop2, true, true, true, UT_TOL);
@@ -964,7 +963,7 @@ static bool test_stack_multiple_container_flatten(void)
 	for (int i = 0; i < 3; i++)
 		nlops[i] = nlop_tenmul_create(N, odims_2, idims1_2, idims2_2);
 	
-	const struct nlop_s* nlop1 = nlop_stack_container_create_F(3, nlops, 2, (int[2]){ 2, -1}, 1, (int[1]){ 2 });
+	const struct nlop_s* nlop1 = nlop_stack_multiple_F(3, nlops, 2, (int[2]){ 2, -1}, 1, (int[1]){ 2 }, true, false);
 	const struct nlop_s* nlop2 = nlop_tenmul_create(N, odims_1, idims1_1, idims2_1);
 
 	nlop1 = nlop_flatten_F(nlop1);
@@ -996,7 +995,7 @@ static bool test_stack_multiple_container_flatten2(void)
 	for (int i = 0; i < 5; i++)
 		nlops[i] = nlop_tenmul_create(N, odims_2, idims1_2, idims2_2);
 	
-	const struct nlop_s* nlop1 = nlop_stack_container_create_F(5, nlops, 2, (int[2]){ 1, -1}, 1, (int[1]){ 1 });
+	const struct nlop_s* nlop1 = nlop_stack_multiple_F(5, nlops, 2, (int[2]){ 1, -1}, 1, (int[1]){ 1 }, true, false);
 	const struct nlop_s* nlop2 = nlop_tenmul_create(N, odims_1, idims1_1, idims2_1);
 
 	nlop1 = nlop_flatten_F(nlop1);
@@ -1011,7 +1010,6 @@ static bool test_stack_multiple_container_flatten2(void)
 }
 
 UT_REGISTER_TEST(test_stack_multiple_container_flatten2);
-
 
 
 static bool test_nlop_select_derivatives(void)
@@ -1385,7 +1383,7 @@ static bool test_mriop_normalinv_config(bool batch_independent, bool share_patte
 	// => The normal operator is the identity
 	// => out = in / (1+lambda)
 	enum { N = 16 };
-	long dims[N] = { 8, 8, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3};
+	long dims[N] = { 8, 8, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3 };
 
 	struct config_nlop_mri_s mri_conf = conf_nlop_mri_simple;
 
@@ -1415,14 +1413,7 @@ static bool test_mriop_normalinv_config(bool batch_independent, bool share_patte
 
 	md_gaussian_rand(N, dims, coils);
 
-
-	complex float* coils_scale = md_alloc(N, idims, CFL_SIZE);
-
-	md_zrss(N, dims, MD_BIT(3), coils_scale, coils);
-	md_zdiv2(N, dims, MD_STRIDES(N, dims, CFL_SIZE), coils, MD_STRIDES(N, dims, CFL_SIZE), coils, MD_STRIDES(N, idims, CFL_SIZE), coils_scale);
-
-	md_free(coils_scale);
-
+	normalize(N, MD_BIT(3), dims, coils);
 
 	nlop_inv = nlop_set_input_const_F(nlop_inv, 1, N, dims, true, coils);
 	nlop_inv = nlop_set_input_const_F(nlop_inv, 1, N, pdims, true, pattern);
@@ -1442,34 +1433,32 @@ static bool test_mriop_normalinv_config(bool batch_independent, bool share_patte
 
 	nlop_generic_apply_unchecked(nlop_inv, 3, MAKE_ARRAY((void*)out, (void*)in, (void*)lambda));
 
-	md_zdiv(N, idims, out, out, in);
-	md_zsmul(N, idims, out, out, 4);
+	md_zsmul(N, idims, out, out, 4.);
+
+	float err = md_znrmse(N, idims, in, out);
+
+	linop_forward_unchecked(nlop_get_derivative(nlop_inv, 0, 0), out, in);
+
+	md_zsmul(N, idims, out, out, 4.);
+
+	err += md_znrmse(N, idims, in, out);
 
 	complex float* ones = md_alloc(N, idims, CFL_SIZE);
 
 	md_zfill(N, idims, ones, 1.);
 
-	float err = md_znrmse(N, idims, ones, out);
-
-	linop_forward_unchecked(nlop_get_derivative(nlop_inv, 0, 0), out, in);
-
-	md_zdiv(N, idims, out, out, in);
-	md_zsmul(N, idims, out, out, 4);
-
-	err += md_znrmse(N, idims, ones, out);
-
 	linop_forward_unchecked(nlop_get_derivative(nlop_inv, 0, 1), out, ones);
 
-	md_zdiv(N, idims, out, out, in);
-	md_zsmul(N, idims, out, out, -16);
+	md_zsmul(N, idims, out, out, -16.);
 
-	err += md_znrmse(N, idims, ones, out);
+	err += md_znrmse(N, idims, in, out);
 
 	md_free(ones);
 	md_free(in);
 	md_free(out);
-	nlop_free(nlop_inv);
 	md_free(lambda);
+
+	nlop_free(nlop_inv);
 
 	UT_ASSERT(1.e-5 > err);
 }

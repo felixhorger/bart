@@ -32,12 +32,12 @@
 
 
 struct mobamod moba_create(const long dims[DIMS], const complex float* mask, const complex float* TI, const complex float* b1,
-		const complex float* psf, const struct noir_model_conf_s* conf, struct moba_conf_s* data, _Bool use_gpu)
+		const complex float* b0, const complex float* psf, const struct noir_model_conf_s* conf, struct moba_conf_s* data, _Bool use_gpu)
 {
 	long data_dims[DIMS];
 	md_select_dims(DIMS, ~COEFF_FLAG, data_dims, dims);
 
-	struct noir_s nlinv = noir_create3(data_dims, mask, psf, conf);
+	struct noir_s nlinv = noir_create(data_dims, mask, psf, conf);
 	struct mobamod ret;
 
 	// FIXME: unify them more
@@ -67,7 +67,7 @@ struct mobamod moba_create(const long dims[DIMS], const complex float* mask, con
 
         case MDB_T1_PHY:
 
-		model = nlop_T1_phy_create(DIMS, map_dims, out_dims, in_dims, TI_dims, TI, use_gpu);
+		model = nlop_T1_phy_create(DIMS, map_dims, out_dims, in_dims, TI_dims, TI, data, use_gpu);
 		break;
 
 	case MDB_BLOCH:
@@ -80,7 +80,7 @@ struct mobamod moba_create(const long dims[DIMS], const complex float* mask, con
 		if (SEQ_IRFLASH == data->sim.seq.seq_type)
 			data->other.scale[2] = 0.;
 
-		model = nlop_bloch_create(DIMS, der_dims, map_dims, out_dims, in_dims, b1, data, use_gpu);
+		model = nlop_bloch_create(DIMS, der_dims, map_dims, out_dims, in_dims, b1, b0, data, use_gpu);
 		break;
 	}
 
@@ -92,6 +92,11 @@ struct mobamod moba_create(const long dims[DIMS], const complex float* mask, con
 	debug_print_dims(DP_INFO, DIMS, nlop_generic_codomain(nlinv.nlop, 0)->dims);
 
 	const struct nlop_s* b = nlinv.nlop;
+
+	// Turn off coil derivative
+	if (data->other.no_sens_deriv)
+		b = nlop_no_der(b, 0, 1);
+
 	const struct nlop_s* c = nlop_chain2(model, 0, b, 0);
 	nlop_free(b);
 

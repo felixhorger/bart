@@ -45,7 +45,7 @@ int main_phantom(int argc, char* argv[argc])
 
 	int geo = -1;
 
-	enum ptype_e { SHEPPLOGAN, CIRC, TIME, SENS, GEOM, STAR, BART, TUBES, RAND_TUBES, NIST, SONAR } ptype = SHEPPLOGAN;
+	enum ptype_e { SHEPPLOGAN, CIRC, TIME, SENS, GEOM, STAR, BART, BRAIN, TUBES, RAND_TUBES, NIST, SONAR, FILE } ptype = SHEPPLOGAN;
 
 	const char* traj_file = NULL;
 	bool basis = false;
@@ -61,6 +61,15 @@ int main_phantom(int argc, char* argv[argc])
 	float rotation_angle = 0.;
 	int rotation_steps = 1;
 
+	struct pha_opts popts = pha_opts_defaults;
+
+	const char* file_load = NULL;
+
+	struct opt_s coil_opts[] = {
+
+		OPTL_SELECT(0, "HEAD_2D_8CH", enum coil_type, &(popts.stype), HEAD_2D_8CH, "2D head coil with up to 8 channels"),
+		OPTL_SELECT(0, "HEAD_3D_64CH", enum coil_type, &(popts.stype), HEAD_3D_64CH, "3D head coil with up to 64 channels"),
+	};
 
 	const struct opt_s opts[] = {
 
@@ -75,8 +84,10 @@ int main_phantom(int argc, char* argv[argc])
 		OPT_SELECT('T', enum ptype_e, &ptype, TUBES, "tubes phantom"),
 		OPTL_SELECT(0, "NIST", enum ptype_e, &ptype, NIST, "NIST phantom (T2 sphere)"),
                 OPTL_SELECT(0, "SONAR", enum ptype_e, &ptype, SONAR, "Diagnostic Sonar phantom"),
+		OPTL_SELECT(0, "BRAIN", enum ptype_e, &ptype, BRAIN, "BRAIN geometry phantom"),
 		OPT_INT('N', &N, "num", "Random tubes phantom and number"),
 		OPT_SELECT('B', enum ptype_e, &ptype, BART, "BART logo"),
+		OPTL_INFILE(0, "FILE", (const char**)(&(file_load)), "name", "Arbitrary geometry based on multicfl file."),
 		OPT_INT('x', &xdim, "n", "dimensions in y and z"),
 		OPT_INT('g', &geo, "n=1,2,3", "select geometry for object phantom"),
 		OPT_SET('3', &d3, "3D"),
@@ -84,6 +95,7 @@ int main_phantom(int argc, char* argv[argc])
 		OPT_INT('r', &rinit, "seed", "random seed initialization"),
 		OPTL_FLOAT(0, "rotation-angle", &(rotation_angle), "[deg]", "Angle of Rotation"),
 		OPTL_INT(0, "rotation-steps", &(rotation_steps), " ", "Number of rotation steps"),
+		OPTL_SUBOPT(0, "coil", "...", "configure type of coil", ARRAY_SIZE(coil_opts), coil_opts),
 	};
 
 	cmdline(&argc, argv, ARRAY_SIZE(args), args, help_str, ARRAY_SIZE(opts), opts);
@@ -97,11 +109,39 @@ int main_phantom(int argc, char* argv[argc])
 
 		ptype = RAND_TUBES;
 		if (N > 200)
-			BART_WARN("Number of tubes is large. Runetime may be very slow.\n");
+			BART_WARN("Number of tubes is large. Runtime may be very slow.\n");
 
 	} else {
 
-		N = (SONAR == ptype ? 8 : (NIST == ptype ? 15 : (BART == ptype ? 6 : 11)));
+		N = (SONAR == ptype ? 8 : (NIST == ptype ? 15 : (BART == ptype ? 6 : (BRAIN == ptype ? 4 : 11))));
+	}
+
+	// Load multi cfl geometry file, if provided
+
+	int N_max = 2;
+	int D_max = 16;
+	int D[N_max];
+
+	long hdims[N_max][D_max];
+	const long* store_dims[N_max];
+
+	complex float* multifile[N_max];
+
+	int subfiles = 0;
+
+	if (NULL != file_load) {
+
+		ptype = FILE;
+
+		subfiles = load_multi_cfl(file_load, N_max, D_max, D, hdims, multifile);
+
+		if (subfiles != N_max)
+			error("Number of cfls in input does not match required number!");
+
+		for (int i = 0; i < subfiles; i++)
+			store_dims[i] = hdims[i];
+
+		N = hdims[1][0];
 	}
 
 	if ((GEOM != ptype) && (-1 != geo)) {
@@ -115,7 +155,7 @@ int main_phantom(int argc, char* argv[argc])
 
 
 	if (TIME == ptype)
-		dims[TE_DIM] = 32;
+		dims[TIME_DIM] = 32;
 
 	if ((TUBES == ptype) || (NIST == ptype) || (SONAR == ptype))
 		dims[TIME_DIM] = rotation_steps;
@@ -132,6 +172,21 @@ int main_phantom(int argc, char* argv[argc])
 
 	if (d3)
 		dims[2] = dims[0];
+
+
+	if ((DEFAULT == popts.stype) && (0 < sens || 0 < osens)) {
+
+		if (d3)
+			popts.stype = HEAD_3D_64CH;
+		else
+			popts.stype = HEAD_2D_8CH;
+	}
+
+	if ((HEAD_2D_8CH == popts.stype) && (8 < sens || 8 < osens))
+		error("More than eight 2D sensitivities are not supported!\n");
+
+	if (((HEAD_2D_8CH == popts.stype) && d3) && (0 < sens || 0 < osens))
+		debug_printf(DP_WARN, "A 3D simulation with 2D sensitivities is chosen!\n");
 
 
 	long sdims[DIMS];
@@ -153,8 +208,8 @@ int main_phantom(int argc, char* argv[argc])
 		dims[1] = sdims[1];
 		dims[2] = sdims[2];
 
+		// FIXME, check with previos
 		dims[TE_DIM] = sdims[TE_DIM];
-
 		dims[TIME_DIM] = sdims[TIME_DIM];
 	}
 
@@ -163,7 +218,7 @@ int main_phantom(int argc, char* argv[argc])
 
 	if (basis) {
 
-		assert(TUBES == ptype || RAND_TUBES == ptype || NIST == ptype || SONAR == ptype || BART == ptype);
+		assert(TUBES == ptype || RAND_TUBES == ptype || NIST == ptype || SONAR == ptype || BART == ptype || BRAIN == ptype || FILE == ptype);
 		dims[COEFF_DIM] = N; // Number of elements of tubes phantom with rings see src/shepplogan.c
 	}
 
@@ -180,7 +235,7 @@ int main_phantom(int argc, char* argv[argc])
 		assert(NULL == traj_file);
 		assert(!kspace);
 
-		calc_sens(dims, out);
+		calc_sens(dims, out, &popts);
 		break;
 
 	case GEOM:
@@ -191,52 +246,65 @@ int main_phantom(int argc, char* argv[argc])
 		if (d3)
 			error("geometric phantom: no 3D mode");
 
-		calc_geo_phantom(dims, out, kspace, geo, sstrs, samples);
+		calc_geo_phantom(dims, out, kspace, geo, sstrs, samples, &popts);
 		break;
 
 	case STAR:
 
 		assert(!d3);
-		calc_star(dims, out, kspace, sstrs, samples);
+		calc_star(dims, out, kspace, sstrs, samples, &popts);
 		break;
 
 	case TIME:
 
 		assert(!d3);
-		calc_moving_circ(dims, out, kspace, sstrs, samples);
+		calc_moving_circ(dims, out, kspace, sstrs, samples, &popts);
 		break;
 
 	case CIRC:
 
-		calc_circ(dims, out, d3, kspace, sstrs, samples);
+		calc_circ(dims, out, d3, kspace, sstrs, samples, &popts);
 //		calc_ring(dims, out, kspace);
 		break;
 
 	case SHEPPLOGAN:
 
-		calc_phantom(dims, out, d3, kspace, sstrs, samples);
+		calc_phantom(dims, out, d3, kspace, sstrs, samples, &popts);
 		break;
 
 	case TUBES:
 	case NIST:
         case SONAR:
 
-		calc_phantom_tubes(dims, out, kspace, false, rotation_angle, N, sstrs, samples);
+		calc_phantom_tubes(dims, out, kspace, false, rotation_angle, N, sstrs, samples, &popts);
 		break;
 
 	case RAND_TUBES:
 
-		calc_phantom_tubes(dims, out, kspace, true, rotation_angle, N, sstrs, samples);
+		calc_phantom_tubes(dims, out, kspace, true, rotation_angle, N, sstrs, samples, &popts);
 		break;
 
 	case BART:
 
-		calc_bart(dims, out, kspace, sstrs, samples);
+		calc_bart(dims, out, kspace, sstrs, samples, &popts);
+		break;
+
+	case BRAIN:
+
+		calc_brain(dims, out, kspace, sstrs, samples, &popts);
+		break;
+
+	case FILE:
+
+		calc_cfl_geom(dims, out, kspace, sstrs, samples, N_max, D_max, hdims, multifile, &popts);
 		break;
 	}
 
 	if (NULL != samples)
 		unmap_cfl(3, sdims, samples);
+
+	if (NULL != file_load)
+		unmap_multi_cfl(subfiles, D, store_dims, multifile);
 
 	unmap_cfl(DIMS, dims, out);
 

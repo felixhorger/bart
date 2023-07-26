@@ -130,7 +130,8 @@ OPT = -O2
 else
 OPT = -Og
 endif
-CPPFLAGS ?= -Wall -Wextra
+#OPT += -ffp-contract=off
+CPPFLAGS ?= -Wall -Wextra -Wno-nonnull -Wno-vla-parameter
 CFLAGS ?= $(OPT) -Wmissing-prototypes
 CXXFLAGS ?= $(OPT)
 
@@ -204,8 +205,8 @@ ISMRM_BASE ?= /usr/local/ismrmrd/
 #
 TBASE=show slice crop resize join transpose squeeze flatten zeros ones flip circshift extract repmat bitmask reshape version delta copy casorati vec poly index multicfl
 TFLP=scale invert conj fmac saxpy sdot spow cpyphs creal carg normalize cdf97 pattern nrmse mip avg cabs zexp
-TNUM=fft fftmod fftshift noise bench threshold conv rss filter mandelbrot wavelet window var std fftrot roistat pol2mask conway morphop
-TRECO=pics pocsense sqpics itsense nlinv moba nufft rof tgv ictv sake wave lrmatrix estdims estshift estdelay wavepsf wshfl rtnlinv mobafit
+TNUM=fft fftmod fftshift noise bench threshold conv rss filter nlmeans mandelbrot wavelet window var std fftrot roistat pol2mask conway morphop
+TRECO=pics pocsense sqpics itsense nlinv moba nufft nufftbase rof tgv ictv sake wave lrmatrix estdims estshift estdelay wavepsf wshfl rtnlinv mobafit
 TCALIB=ecalib ecaltwo caldir walsh cc ccapply calmat svd estvar whiten rmfreq ssa bin
 TMRI=homodyne poisson twixread fakeksp looklocker upat fovshift
 TSIM=phantom traj signal epg sim
@@ -220,7 +221,7 @@ MODULES += -lwin
 endif
 
 MODULES_pics = -lgrecon -lsense -liter -llinops -lwavelet -llowrank -lnoncart -lnn -lnlops 
-MODULES_sqpics = -lsense -liter -llinops -lwavelet -llowrank -lnoncart
+MODULES_sqpics = -lsense -liter -llinops -lwavelet -llowrank -lnoncart -llinops
 MODULES_pocsense = -lsense -liter -llinops -lwavelet
 MODULES_nlinv = -lnoir -liter -lnlops -llinops -lnoncart
 MODULES_rtnlinv = -lnoir -liter -lnlops -llinops -lnoncart
@@ -621,7 +622,7 @@ UTARGETS += test_batchsvd
 MODULES_test_batchsvd = -llowrank
 
 # lib misc
-UTARGETS += test_pattern test_types test_misc test_memcfl
+UTARGETS += test_pattern test_types test_misc test_memcfl test_tree
 
 # lib moba
 UTARGETS += test_moba
@@ -637,9 +638,9 @@ UTARGETS += test_nufft
 MODULES_test_nufft += -lnoncart -llinops
 
 # lib num
-UTARGETS += test_multind test_flpmath test_splines test_linalg test_polynom test_window test_conv
+UTARGETS += test_multind test_flpmath test_splines test_linalg test_polynom test_window test_conv test_ode test_nlmeans
 UTARGETS += test_blas test_mdfft test_ops test_ops_p test_flpmath2 test_convcorr test_specfun test_qform test_fft
-UTARGETS_GPU += test_cudafft test_cuda_flpmath test_cuda_flpmath2 test_cuda_gpukrnls test_cuda_convcorr test_cuda_multind test_cuda_shuffle
+UTARGETS_GPU += test_cudafft test_cuda_flpmath test_cuda_flpmath2 test_cuda_gpukrnls test_cuda_convcorr test_cuda_multind test_cuda_shuffle test_cuda_memcache_clear
 
 # lib simu
 UTARGETS += test_ode_bloch test_ode_simu test_biot_savart test_signals test_epg test_pulse

@@ -170,7 +170,7 @@ static bool test_nlop_blochfun(void)
 
 	md_zfill(N, in_dims, src, 1.0);
 
-	struct nlop_s* op_bloch = nlop_bloch_create(N, all_dims, map_dims, out_dims, in_dims, NULL, &data, gpu_use);
+	struct nlop_s* op_bloch = nlop_bloch_create(N, all_dims, map_dims, out_dims, in_dims, NULL, NULL, &data, gpu_use);
 
 	nlop_apply(op_bloch, N, out_dims, dst, N, in_dims, src);
 
@@ -202,7 +202,18 @@ static bool test_nlop_T1phyfun(void)
 
 	md_zfill(N, in_dims, src, 1.0);
 
-	struct nlop_s* T1_phy = nlop_T1_phy_create(N, map_dims, out_dims, in_dims, TI_dims, TI, false);
+	struct moba_conf_s data;
+
+	data.sim.seq = simdata_seq_defaults;
+        data.sim.voxel = simdata_voxel_defaults;
+        data.sim.pulse = simdata_pulse_defaults;
+        data.sim.pulse.hs = hs_pulse_defaults;
+        data.sim.grad = simdata_grad_defaults;
+        data.sim.tmp = simdata_tmp_defaults;
+	data.sim.other = simdata_other_defaults;
+        data.other = moba_other_defaults;
+
+	struct nlop_s* T1_phy = nlop_T1_phy_create(N, map_dims, out_dims, in_dims, TI_dims, TI, &data, false);
 
 	nlop_apply(T1_phy, N, out_dims, dst, N, in_dims, src);
 

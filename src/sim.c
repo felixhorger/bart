@@ -33,7 +33,7 @@
 static const char help_str[] = "simulation tool";
 
 
-// FIXME: Turn of sensitivity analysis if derivatives are not asked for
+// FIXME: Turn off sensitivity analysis if derivatives are not asked for
 static void perform_bloch_simulation(int N, struct sim_data* data, long mdims[N], complex float* mxy, long ddims[N], complex float* deriv)     // 4 Derivatives: dR1, dM0, dR2, dB1
 {
         int D = ddims[READ_DIM];
@@ -156,6 +156,7 @@ int main_sim(int argc, char* argv[argc])
         struct opt_s other_opts[] = {
 
                 OPTL_FLOAT(0, "ode-tol", &(data.other.ode_tol), "", "ODE tolerance value [def: 1e-5]"),
+		OPTL_FLOAT(0, "stm-tol", &(data.other.stm_tol), "", "STM tolerance value [def: 1e-6]"),
                 OPTL_FLOAT(0, "sampling-rate", &(data.other.sampling_rate), "", "Sampling rate of RF pulse used for ROT simulation in Hz [def: 1e6 Hz]"),
         };
         const int N_other_opts = ARRAY_SIZE(other_opts);
@@ -168,7 +169,7 @@ int main_sim(int argc, char* argv[argc])
                 OPTL_SELECT(0, "ROT", enum sim_type, &(data.seq.type), SIM_ROT, "homogeneously discretized simulation based on rotational matrices"),
                 OPTL_SELECT(0, "ODE", enum sim_type, &(data.seq.type), SIM_ODE, "full ordinary differential equation solver based simulation (default)"),
                 OPTL_SELECT(0, "STM", enum sim_type, &(data.seq.type), SIM_STM, "state-transition matrix based simulation"),
-                OPTL_SET(0, "split-dim", &split_dim, "Split output in x, y, and z dimensional parts"),
+                OPTL_SET(0, "split-dim", &split_dim, "Split magnetization into x, y, and z component"),
                 OPTL_SUBOPT(0, "seq", "...", "configure sequence parameter", N_seq_opts, seq_opts),
                 OPTL_SUBOPT(0, "other", "...", "configure other parameters", N_other_opts, other_opts),
 	};

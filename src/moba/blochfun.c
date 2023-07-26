@@ -57,6 +57,7 @@ struct blochfun_s {
 	complex float* derivatives;
 
 	const complex float* b1;
+	const complex float* b0;
 
 	const struct moba_conf_s* moba_data;
 
@@ -208,7 +209,21 @@ static void bloch_fun(const nlop_data_t* _data, complex float* dst, const comple
                                 sim_data.voxel.r1 = crealf(r1scale[spa_ind]);
 				sim_data.voxel.r2 = crealf(r2scale[spa_ind]);
 				sim_data.voxel.m0 = 1.;
-				sim_data.voxel.b1 = b1s * crealf(b1scale[spa_ind]);
+				sim_data.voxel.b1 = b1s * (1. + crealf(b1scale[spa_ind]));
+
+				// Extract external B0 value from input
+
+				float b0s = 0.;
+
+				if (NULL != data->b0) {
+
+					b0s = crealf(data->b0[spa_ind]);
+
+					if (safe_isnanf(b0s))
+						b0s = 0.;
+				}
+
+				sim_data.voxel.w = b0s;
 
                                 // debug_sim(&sim_data);
                                 // debug_sim(&(data->moba_data->sim));
@@ -244,15 +259,15 @@ static void bloch_fun(const nlop_data_t* _data, complex float* dst, const comple
 
                                         assert(0 != sim_data.pulse.flipangle);
 
-					// Scaling signal to 1
-                                        //      -> Comparable to Look-Locker model
+					// Scaling signal close to 1
+                                        //      -> Comparable to Look-Locker model (difference relaxation factor: expf(-sim_data.voxel.r2 * sim_data.seq.te))
 					//	-> divided by nom slice thickness to keep multi spin simulation signal around 1
 					// 	-> nom slice thickness [m] * 1000 -> [mm], because relative to default slice thickness of single spin of 0.001 m
 					if ((SEQ_FLASH == sim_data.seq.seq_type) || (SEQ_IRFLASH == sim_data.seq.seq_type))
-						a = 1. / (sinf(sim_data.pulse.flipangle * M_PI / 180.) * expf(-sim_data.voxel.r2 * sim_data.seq.te)) / (sim_data.seq.nom_slice_thickness * 1000.);
+						a = 1. / sinf(sim_data.pulse.flipangle * M_PI / 180.) / (sim_data.seq.nom_slice_thickness * 1000.);
 
                                         else if ((SEQ_BSSFP == sim_data.seq.seq_type) || (SEQ_IRBSSFP == sim_data.seq.seq_type))
-                                                a = 1. / (sinf(sim_data.pulse.flipangle / 2. * M_PI / 180.) * expf(-sim_data.voxel.r2 * sim_data.seq.te)) / (sim_data.seq.nom_slice_thickness * 1000.);
+                                                a = 1. / sinf(sim_data.pulse.flipangle / 2. * M_PI / 180.) / (sim_data.seq.nom_slice_thickness * 1000.);
 
 					const float (*scale2)[4] = &data->moba_data->other.scale;
 
@@ -427,7 +442,7 @@ static void bloch_del(const nlop_data_t* _data)
 
 
 struct nlop_s* nlop_bloch_create(int N, const long der_dims[N], const long map_dims[N], const long out_dims[N], const long in_dims[N],
-			const complex float* b1, const struct moba_conf_s* config, bool use_gpu)
+			const complex float* b1, const complex float* b0, const struct moba_conf_s* config, bool use_gpu)
 {
 	UNUSED(use_gpu);
 
@@ -474,6 +489,7 @@ struct nlop_s* nlop_bloch_create(int N, const long der_dims[N], const long map_d
 	data->moba_data = config;
 
 	data->b1 = b1;
+	data->b0 = b0;
 
 	data->use_gpu = use_gpu;
 
@@ -485,7 +501,7 @@ struct nlop_s* nlop_bloch_create(int N, const long der_dims[N], const long map_d
 	md_select_dims(N, FFT_FLAGS, w_dims, map_dims);
 
 	complex float* weights = md_alloc(N, w_dims, CFL_SIZE);
-	noir_calc_weights(440., 20., w_dims, weights);
+	noir_calc_weights(config->other.b1_sobolev_a, config->other.b1_sobolev_b, w_dims, weights);
 
 	const struct linop_s* linop_wghts = linop_cdiag_create(N, map_dims, FFT_FLAGS, weights);
 	const struct linop_s* linop_ifftc = linop_ifftc_create(N, map_dims, FFT_FLAGS);

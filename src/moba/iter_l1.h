@@ -19,6 +19,7 @@ struct mdb_irgnm_l1_conf {
 	unsigned long constrained_maps;
 	unsigned long l2flags;
 	_Bool auto_norm;
+	_Bool no_sens_l2;
 
 	int not_wav_maps;
 	unsigned int algo;
@@ -26,6 +27,10 @@ struct mdb_irgnm_l1_conf {
 	struct opt_reg_s* ropts;
 	int tvscales_N;
 	complex float* tvscales;
+	float l1val;
+
+	unsigned int pusteps;
+	float ratio;
 };
 
 void mdb_irgnm_l1(const struct mdb_irgnm_l1_conf* conf,

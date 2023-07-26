@@ -34,6 +34,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #ifdef _WIN32
 #include <malloc.h>
 #else
@@ -51,6 +55,7 @@
 #ifdef USE_CUDA
 #include "num/gpuops.h"
 #include "num/gpukrnls.h"
+#include "num/gpukrnls_copy.h"
 #endif
 
 #include "multind.h"
@@ -60,23 +65,40 @@
 
 extern struct cuda_threads_s* gpu_threads_create(const void* ref)
 {
+#ifdef USE_CUDA
+	if ((NULL == ref) || cuda_ondevice(ref))
+		return cuda_threads_create();
+#else
 	UNUSED(ref);
+#endif
 	return NULL;
 }
 
 extern void gpu_threads_enter(struct cuda_threads_s* x)
 {
+#ifdef USE_CUDA
+	cuda_threads_enter(x);
+#else
 	UNUSED(x);
+#endif
 }
 
 extern void gpu_threads_leave(struct cuda_threads_s* x)
 {
+#ifdef USE_CUDA
+	cuda_threads_leave(x);
+#else
 	UNUSED(x);
+#endif
 }
 
 extern void gpu_threads_free(struct cuda_threads_s* x)
 {
+#ifdef USE_CUDA
+	cuda_threads_free(x);
+#else
 	UNUSED(x);
+#endif
 }
 
 /**
@@ -149,10 +171,20 @@ void md_parallel_nary(int C, int D, const long dim[D], unsigned long flags, cons
 
 	struct cuda_threads_s* gpu_stat = gpu_threads_create(ptr[0]);
 
+#ifdef _OPENMP
+	int old_threads = omp_get_max_threads();
+	int outer_threads = MAX(1, MIN(old_threads, total_iterations));
+	int inner_threads = MAX(1, old_threads / outer_threads);
+
+	omp_set_num_threads(outer_threads);	
+#endif
 
 	#pragma omp parallel for
 	for (long i = 0; i < total_iterations; i++) {
 
+#ifdef _OPENMP
+		omp_set_num_threads(inner_threads);
+#endif
 		gpu_threads_enter(gpu_stat);
 
 		// Recover place in parallel iteration space
@@ -179,6 +211,10 @@ void md_parallel_nary(int C, int D, const long dim[D], unsigned long flags, cons
 
 		gpu_threads_leave(gpu_stat);
 	}
+
+#ifdef _OPENMP
+	omp_set_num_threads(old_threads);
+#endif
 
 	gpu_threads_free(gpu_stat);
 }
@@ -729,6 +765,14 @@ void md_copy2(int D, const long dim[D], const long ostr[D], void* optr, const lo
 	md_copy_dims(ND, tistr, tmp);
 #endif
 
+#ifdef USE_CUDA
+	if (use_gpu && (cuda_get_device_num(optr) == cuda_get_device_num(iptr)) && ND <= 7) {
+
+		cuda_copy_ND(ND, tdims, tostr, optr, tistr, iptr, size);
+		return;
+	}
+#endif
+
 #if 1
 	//fill like copies
 
@@ -1085,7 +1129,15 @@ void md_resize(int D, const long odim[D], void* optr, const long idim[D], const 
 	long pos[D];
 	memset(pos, 0, D * sizeof(long));
 
-	md_clear(D, odim, optr, size);
+	for (int i = 0; i < D; i++) {
+
+		if (odim[i] > idim[i]) {
+
+			md_clear(D, odim, optr, size);
+			break;
+		}
+	}
+
 	md_copy_block(D, pos, odim, optr, idim, iptr, size);
 }
 
@@ -1119,7 +1171,15 @@ void md_resize_center(int D, const long odim[D], void* optr, const long idim[D],
 	for (int i = 0; i < D; i++)
 		pos[i] = labs((odim[i] / 2) - (idim[i] / 2));
 
-	md_clear(D, odim, optr, size);
+	for (int i = 0; i < D; i++) {
+
+		if (odim[i] > idim[i]) {
+
+			md_clear(D, odim, optr, size);
+			break;
+		}
+	}
+
 	md_copy_block(D, pos, odim, optr, idim, iptr, size);
 }
 
@@ -1138,6 +1198,86 @@ void md_pad_center(int D, const void* val, const long odim[D], void* optr, const
 
 	md_fill(D, odim, optr, val, size);
 	md_copy_block(D, pos, odim, optr, idim, iptr, size);
+}
+
+
+void md_reflectpad_center2(int D, const long odim[D], const long ostr[D], void* optr,
+			const long idim[D], const long istr[D], const void* iptr, size_t size)
+{
+	long odim2[D];
+	long ristr[D];
+	long loop_idx[D];
+	long blockdim[D];
+	long center_block[D];
+	long block0_size[D];
+	long count = 0;
+
+	for (int i = 0; i < D; i++) {
+
+		assert(odim[i] >= idim[i]);
+
+		blockdim[i] = 1;
+		center_block[i] = 0;
+
+		ristr[i] = istr[i];
+		odim2[i] = idim[i];
+
+		block0_size[i] = 0;
+
+		if (odim[i] > idim[i]) {
+
+			loop_idx[count++] = i;
+
+			long main_start = labs((odim[i] / 2) - (idim[i] / 2));
+			long main_end = main_start + idim[i];
+			long before = (main_start + idim[i] - 1) / idim[i];
+			long after = (odim[i] - main_end + idim[i] - 1) / idim[i];
+
+			blockdim[i] = 1 + before + after;
+			center_block[i] = before;
+
+			long x = main_start % idim[i];
+
+			block0_size[i] = (0 == x) ? idim[i] : x;
+		}
+	}
+
+	long block_pos[D];
+	long in_pos[D];
+
+	md_set_dims(D, block_pos, 0);
+	md_set_dims(D, in_pos, 0);
+
+	long opos[D];
+	md_set_dims(D, opos, 0);
+
+	do {
+		for (int i = 0, idx = loop_idx[0]; i < count; idx = (++i < count) ? loop_idx[i] : idx) {
+
+			opos[idx] = (block_pos[idx] >= 1) ? (block0_size[idx] + idim[idx] * (block_pos[idx] - 1)) : 0;
+			odim2[idx] = (block_pos[idx] == 0) ? block0_size[idx] : MIN(idim[idx], odim[idx] - opos[idx]);
+
+			if (1 == labs(center_block[idx] - block_pos[idx]) % 2) {
+
+				ristr[idx] = -istr[idx];
+				in_pos[idx] = (odim2[idx] < idim[idx]) ? ((block_pos[idx] > center_block[idx]) ? (idim[idx] - 1) : odim2[idx] - 1) : (idim[idx] - 1);
+
+			} else {
+
+				ristr[idx] = istr[idx];
+				in_pos[idx] = (odim2[idx] < idim[idx]) ? ((block_pos[idx] > center_block[idx]) ? 0 : (idim[idx] - odim2[idx])) : 0;
+			}
+		}
+
+		md_copy2(D, odim2, ostr, md_calc_offset(D, ostr, opos) + optr, ristr, md_calc_offset(D, istr, in_pos) + iptr, size);
+
+	} while (md_next(D, blockdim, ~0U, block_pos));
+}
+
+void md_reflectpad_center(int D, const long odim[D], void* optr, const long idim[D], const void* iptr, size_t size)
+{
+	md_reflectpad_center2(D, odim, MD_STRIDES(D, odim, size), optr,
+				idim, MD_STRIDES(D, idim, size), iptr, size);
 }
 
 
@@ -1183,7 +1323,7 @@ void md_slice(int D, unsigned long flags, const long pos[D], const long dim[D], 
  */
 void md_permute2(int D, const int order[D], const long odims[D], const long ostr[D], void* optr, const long idims[D], const long istr[D], const void* iptr, size_t size)
 {
-	unsigned int flags = 0;
+	unsigned long flags = 0;
 	long ostr2[D];
 
 	for (int i = 0; i < D; i++) {
@@ -1196,7 +1336,7 @@ void md_permute2(int D, const int order[D], const long odims[D], const long ostr
 		ostr2[order[i]] = ostr[i];
 	}
 
-	assert(MD_BIT(D) == flags + 1);
+	assert(MD_BIT(D) == flags + 1U);
 
 	md_copy2(D, idims, ostr2, optr, istr, iptr, size);
 }

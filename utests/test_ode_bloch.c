@@ -1,9 +1,7 @@
 /* Copyright 2018. Martin Uecker.
+ * Copyright 2023. Insitute of Biomedical Imaging. TU Graz.
  * All rights reserved. Use of this source code is governed by
  * a BSD-style license which can be found in the LICENSE file.
- *
- * Authors:
- * 2016 Martin Uecker <martin.uecker@med.uni-goettingen.de>
  */
 
 
@@ -17,21 +15,20 @@
 
 #include "utest.h"
 
-#if 0
-static void lorenz(float out[3], const float in[3], float sigma, float rho, float beta)
+
+static void ode_direct_sa_wrap(float h, float tol, int N, int P, float x[P + 1][N],
+	float st, float end, void* data,
+	void (*der)(void* data, float* out, float t, const float* yn),
+	void (*pdy)(void* data, float* out, float t, const float* yn),
+	void (*pdp)(void* data, float* out, float t, const float* yn))
 {
-	out[0] = sigma * (in[1] - in[0]);
-	out[1] = in[0] * (rho - in[2]) - in[1];
-	out[2] = in[0] * in[1] - beta * in[2];
+	NESTED(void, call_der, (float* out, float t, const float* in)) { der(data, out, t, in); };
+	NESTED(void, call_pdy, (float* out, float t, const float* in)) { pdy(data, out, t, in); };
+	NESTED(void, call_pdp, (float* out, float t, const float* in)) { pdp(data, out, t, in); };
+
+	ode_direct_sa(h, tol, N, P, x, st, end, call_der, call_pdy, call_pdp);
 }
 
-
-static void lorenz_fun(void* data, float* out, float t, const float* in)
-{
-	(void)data; (void)t;
-	lorenz(out, in, 10., 28., 8. / 3.);
-}
-#endif
 
 
 struct bloch_s {
@@ -77,7 +74,9 @@ static bool test_ode_bloch(void)
 	float tol = 0.000001;
 	float end = 0.2;
 
-	ode_interval(h, tol, 3, x, 0., end, &data, bloch_fun);
+	NESTED(void, call_fun, (float* out, float t, const float* in)) { bloch_fun(&data, out, t, in); };
+
+	ode_interval(h, tol, 3, x, 0., end, call_fun);
 	bloch_relaxation(x2, end, x0, data.r1, data.r2, data.gb);
 
 	float err2 = 0.;
@@ -209,7 +208,7 @@ static bool test_ode_sa(void)
 	struct sa_data_s data = { 1, (float[1]){ -WATER_T2 } };
 
 	float xp[2][1] = { { 1. }, { 0. } };
-	ode_direct_sa(h, tol, 1, 1, xp, 0., end, &data, sa_der, sa_pdy, sa_pdp);
+	ode_direct_sa_wrap(h, tol, 1, 1, xp, 0., end, &data, sa_der, sa_pdy, sa_pdp);
 
 	float x[1] = { 1. };
 	sa_fun(&data, x, end);
@@ -253,8 +252,7 @@ static bool test_ode_sa2(void)
 			xp[1 + j][i] = 0;
 	}
 
-
-	ode_direct_sa(h, tol, N, N, xp, 0., end, &data, sa_der, sa_pdy, sa_pdp);
+	ode_direct_sa_wrap(h, tol, N, N, xp, 0., end, &data, sa_der, sa_pdy, sa_pdp);
 
 	float x[N];
 	sa_fun(&data, x, end);
@@ -309,9 +307,9 @@ static bool test_ode_sa_bloch(void)
 	float h = 0.1;
 	float tol = 0.000001;
 	float end = 0.2;
-
 	float q = 1.E-3;
-	ode_direct_sa(h, tol, 3, 2, xp, 0., end, &data, bloch_fun, bloch_pdy2, bloch_pdp2);
+
+	ode_direct_sa_wrap(h, tol, 3, 2, xp, 0., end, &data, bloch_fun, bloch_pdy2, bloch_pdp2);
 	bloch_relaxation(x2, end, x0, data.r1, data.r2, data.gb);
 	bloch_relaxation(x2r1, end, x0, data.r1 + q, data.r2, data.gb);
 	bloch_relaxation(x2r2, end, x0, data.r1, data.r2 + q, data.gb);
@@ -355,7 +353,7 @@ static bool test_bloch_relaxation(void)
 {
 	float x0[3] = { 0., 1., 0. };
 	float x[3] = { 0. };
-	float ref[3] = { 0., 1./M_E, 1-1./M_E };
+	float ref[3] = { 0., 1. / M_E, 1. - 1. / M_E };
 
         struct bloch_s data = { 1., 1., { 0., 0., 0. } };
 
@@ -385,7 +383,7 @@ static bool test_bloch_excitation(void)
 	float x[3] = { 0. };
 	float ref[3] = { 0., 1., 0. };
 
-        struct bloch_s data = { 1., 1., { M_PI/2., 0., 0. } };
+        struct bloch_s data = { 1., 1., { M_PI / 2., 0., 0. } };
 
         bloch_excitation(x, 1., x0, data.r1, data.r2, data.gb);
 
@@ -412,7 +410,7 @@ static bool test_bloch_excitation2_phase(void)
 	float x[3] = { 0. };
 	float ref[3] = { 1., 0., 0. };
 
-	bloch_excitation2(x, x0, M_PI/2., M_PI/2.);
+	bloch_excitation2(x, x0, M_PI / 2., M_PI / 2.);
 
 #if 0
 	printf("test_bloch_excitation2_phase\n");
@@ -443,17 +441,17 @@ static bool test_bloch_b1_pdp(void)
 
 	bloch_b1_pdp(out, in, 0., 0., gb, 0., 1.);
 
-	if (1 != out[2][1])
+	if (1. != out[2][1])
 		return false;
 
 	bloch_b1_pdp(out, in, 0., 0., gb, M_PI/2., 1.);
 
-	if (1 != out[2][0])
+	if (1. != out[2][0])
 		return false;
 
 	bloch_b1_pdp(out, in, 0., 0., gb, M_PI/2., 2.);
 
-	if (2 != out[2][0])
+	if (2. != out[2][0])
 		return false;
 
 	// M_y == 1
@@ -463,7 +461,7 @@ static bool test_bloch_b1_pdp(void)
 
 	bloch_b1_pdp(out, in, 0., 0., gb, 0., 1.);
 
-	if ((1 != out[0][2]) || (-1 != out[1][1]) || (-1 != out[2][2]))
+	if ((1. != out[0][2]) || (-1. != out[1][1]) || (-1. != out[2][2]))
 		return false;
 
 
@@ -474,12 +472,12 @@ static bool test_bloch_b1_pdp(void)
 
 	bloch_b1_pdp(out, in, 0., 0., gb, 0., 1.);
 
-	if ((1 != out[0][2]) || (-1 != out[1][0]))
+	if ((1. != out[0][2]) || (-1. != out[1][0]))
 		return false;
 
-	bloch_b1_pdp(out, in, 0., 0., gb, M_PI/2., 1.);
+	bloch_b1_pdp(out, in, 0., 0., gb, M_PI / 2., 1.);
 
-	if ((1 != out[0][2]) || (-1 != out[1][0]) || (-1 != out[2][2]))
+	if ((1. != out[0][2]) || (-1. != out[1][0]) || (-1. != out[2][2]))
 		return false;
 
 #if 0
@@ -507,7 +505,7 @@ static void bloch_wrap_pdp(void* _data, float* out, float t, const float* in)
 	struct bloch_s* data = _data;
 	(void)t;
 
-	bloch_b1_pdp((float(*)[3])out, in, data->r1, data->r2, data->gb, 0., M_PI / (2 * 0.2));
+	bloch_b1_pdp((float(*)[3])out, in, data->r1, data->r2, data->gb, 0., M_PI / (2. * 0.2));
 }
 
 // dFA
@@ -525,7 +523,7 @@ static void bloch_wrap_pdp3(void* _data, float* out, float t, const float* in)
 	struct bloch_s* data = _data;
 	(void)t;
 
-	bloch_b1_pdp((float(*)[3])out, in, data->r1, data->r2, data->gb, M_PI/2., 1.);
+	bloch_b1_pdp((float(*)[3])out, in, data->r1, data->r2, data->gb, M_PI / 2., 1.);
 }
 
 
@@ -551,7 +549,8 @@ static bool test_ode_sa_bloch_b1(void)
 	float tol = 0.000001;
 
 	float q = 1.E-3;
-	ode_direct_sa(h, tol, N, P, xp, 0., end, &data, bloch_fun, bloch_pdy2, bloch_wrap_pdp);
+
+	ode_direct_sa_wrap(h, tol, N, P, xp, 0., end, &data, bloch_fun, bloch_pdy2, bloch_wrap_pdp);
 
 	bloch_excitation(x2, end, x0, data.r1, data.r2, data.gb);
 
@@ -561,7 +560,7 @@ static bool test_ode_sa_bloch_b1(void)
 	for (int i = 0; i < N; i++) {
 
                 // dm/dfa = dm/db1*db1/dfa = dm/db1*1/(nom.FA)
-		float err = fabsf(q * xp[3][i]/fa - (x2b1[i] - x2[i]));
+		float err = fabsf(q * xp[3][i] / fa - (x2b1[i] - x2[i]));
 
 		if (err > 1.E-7)
 			return false;
@@ -595,7 +594,8 @@ static bool test_ode_sa_bloch_fa(void)
 	float tol = 0.000001;
 
 	float q = 1.E-3;
-	ode_direct_sa(h, tol, N, P, xp, 0., end, &data, bloch_fun, bloch_pdy2, bloch_wrap_pdp2);
+
+	ode_direct_sa_wrap(h, tol, N, P, xp, 0., end, &data, bloch_fun, bloch_pdy2, bloch_wrap_pdp2);
 
 	bloch_excitation(x2, end, x0, data.r1, data.r2, data.gb);
 
@@ -629,7 +629,7 @@ static bool test_ode_sa_bloch_fa_with_phase(void)
 	float fa = M_PI / 2. / end;
 	float phase = M_PI/2.;
 
-	struct bloch_s data = { 0. , 0., { cosf(phase)*fa, -sinf(phase)*fa, 0. } };
+	struct bloch_s data = { 0. , 0., { cosf(phase) * fa, -sinf(phase) * fa, 0. } };
 
 	float xp[4][3] = { { 0., 0., 1. }, { 0. }, { 0. }, { 0. } };
 	float x0[3] = { 0., 0., 1. };
@@ -642,12 +642,12 @@ static bool test_ode_sa_bloch_fa_with_phase(void)
 	float q = 1.E-3;
 
 	// phase == M_PI/2. requires bloch_wrap_pdp3!
-	ode_direct_sa(h, tol, N, P, xp, 0., end, &data, bloch_fun, bloch_pdy2, bloch_wrap_pdp3);
+	ode_direct_sa_wrap(h, tol, N, P, xp, 0., end, &data, bloch_fun, bloch_pdy2, bloch_wrap_pdp3);
 
-	bloch_excitation2(x2, x0, fa*end, phase);
+	bloch_excitation2(x2, x0, fa * end, phase);
 
 	fa += q;
-	bloch_excitation2(x2b1, x0, fa*end, phase);
+	bloch_excitation2(x2b1, x0, fa * end, phase);
 
 	for (int i = 0; i < N; i++) {
 

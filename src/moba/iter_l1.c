@@ -1,5 +1,6 @@
 /* Copyright 2013-2014. The Regents of the University of California.
  * Copyright 2019. Uecker Lab, University Medical Center Goettingen.
+ * Copryright 2023. Institute of Biomedical Imaging. TU Graz.
  * All rights reserved. Use of this source code is governed by 
  * a BSD-style license which can be found in the LICENSE file.
  *
@@ -83,12 +84,13 @@ DEF_TYPEID(T1inv_s);
 
 
 
-static void normal(iter_op_data* _data, float* dst, const float* src)
+static void normal(iter_op_data* _data, float* _dst, const float* _src)
 {
 	auto data = CAST_DOWN(T1inv_s, _data);
+	complex float* dst = (complex float*)_dst;
+	const complex float* src = (const complex float*)_src;
 
-	linop_normal_unchecked(nlop_get_derivative(data->nlop, 0, 0), (complex float*)dst, (const complex float*)src);
-
+	linop_normal_unchecked(nlop_get_derivative(data->nlop, 0, 0), dst, src);
 
 // We do not enforce this for now, for backwards compatibility
 #if 0
@@ -110,24 +112,29 @@ static void normal(iter_op_data* _data, float* dst, const float* src)
 	long pos[DIMS] = { 0 };
 	for (pos[COEFF_DIM] = 0; pos[COEFF_DIM] < img_dims[COEFF_DIM]; pos[COEFF_DIM]++) {
 
-		complex float* map_dst = &MD_ACCESS(DIMS, img_strs, pos, (complex float*)dst);
-		const complex float* map_src = &MD_ACCESS(DIMS, img_strs, pos, (const complex float*)src);
+		complex float* map_dst = &MD_ACCESS(DIMS, img_strs, pos, dst);
+		const complex float* map_src = &MD_ACCESS(DIMS, img_strs, pos, src);
 
 		if (MD_IS_SET(data->conf->l2flags, pos[COEFF_DIM]))
 			md_zaxpy2(DIMS, map_dims, img_strs, map_dst, data->alpha, img_strs, map_src);
 	}
 
-	complex float* col_dst = ((complex float*)dst) + md_calc_size(DIMS, img_dims);
-	const complex float* col_src = ((const complex float*)src) + md_calc_size(DIMS, img_dims);
+	complex float* col_dst = dst + md_calc_size(DIMS, img_dims);
+	const complex float* col_src = src + md_calc_size(DIMS, img_dims);
+
 	long col_size = data->size_x / 2 - md_calc_size(DIMS, img_dims);
 
-	md_zaxpy(1, MD_DIMS(col_size), col_dst, data->alpha, col_src);
+	float alpha = data->alpha;
+
+	if (data->conf->no_sens_l2)
+		alpha = 0.;
+
+	md_zaxpy(1, MD_DIMS(col_size), col_dst, alpha, col_src);
 }
 
 static void pos_value(iter_op_data* _data, float* dst, const float* src)
 {
 	auto data = CAST_DOWN(T1inv_s, _data);
-
 
 	// filter coils here, as we want to leave the coil sensitivity part untouched
 	long img_dims[DIMS];
@@ -142,14 +149,13 @@ static void pos_value(iter_op_data* _data, float* dst, const float* src)
 	long pos[DIMS] = { 0 };
 
 	do {
+		if (!((1UL << pos[COEFF_DIM]) & data->conf->constrained_maps))
+			continue;
 
-		if ((1UL << pos[COEFF_DIM]) & data->conf->constrained_maps) {
-
-			md_zsmax2(DIMS, dims1,
-				strs, &MD_ACCESS(DIMS, strs, pos, (complex float*)dst),
-				strs, &MD_ACCESS(DIMS, strs, pos, (const complex float*)src),
-				data->conf->lower_bound);
-		}
+		md_zsmax2(DIMS, dims1,
+			strs, &MD_ACCESS(DIMS, strs, pos, (complex float*)dst),
+			strs, &MD_ACCESS(DIMS, strs, pos, (const complex float*)src),
+			data->conf->lower_bound);
 
 	} while(md_next(DIMS, img_dims, ~FFT_FLAGS, pos));
 }
@@ -191,12 +197,14 @@ static void inverse_fista(iter_op_data* _data, float alpha, float* dst, const fl
 
 		data->alpha = 0.;
 		maxeigen = alpha;
+
 	} else {
 
 		data->alpha = alpha;
 	}
 
 	void* x = md_alloc_sameplace(1, MD_DIMS(data->size_x), FL_SIZE, src);
+
 	md_gaussian_rand(1, MD_DIMS(data->size_x / 2), x);
 
 	maxeigen += power(20, data->size_x, select_vecops(src), (struct iter_op_s){ normal, CAST_UP(data) }, x);
@@ -213,7 +221,7 @@ static void inverse_fista(iter_op_data* _data, float alpha, float* dst, const fl
 
 	wavthresh_rand_state_set(data->prox1, 1);
     
-	int maxiter = MIN(data->conf->c2->cgiter, 10 * powf(2, data->outer_iter));
+	int maxiter = MIN(data->conf->c2->cgiter, 10. * powf(2, data->outer_iter));
 
 
 	float eps = md_norm(1, MD_DIMS(data->size_x), src);
@@ -244,7 +252,7 @@ static void inverse_admm(iter_op_data* _data, float alpha, float* dst, const flo
 
 	data->alpha = alpha;	// update alpha for normal operator
 
-	int maxiter = MIN(data->conf->c2->cgiter, 10 * powf(2, data->outer_iter));
+	int maxiter = MIN(data->conf->c2->cgiter, 10 * powf(2., data->outer_iter));
 
 	// initialize prox functions
 
@@ -335,7 +343,7 @@ static const struct operator_p_s* create_prox(const long img_dims[DIMS], unsigne
 	long minsize[DIMS] = { [0 ... DIMS - 1] = 1 };
 	unsigned int wflags = 0;
 
-	for (unsigned int i = 0; i < DIMS; i++) {
+	for (int i = 0; i < DIMS; i++) {
 
 		if ((1 < img_dims[i]) && MD_IS_SET(FFT_FLAGS, i)) {
 
@@ -364,7 +372,6 @@ DEF_TYPEID(T1inv2_s);
 static void T1inv_apply(const operator_data_t* _data, float alpha, complex float* dst, const complex float* src)
 {
 	const auto data = &CAST_DOWN(T1inv2_s, _data)->data;
-
 
 	switch (data->conf->algo) {
 	
@@ -415,13 +422,13 @@ static const struct operator_p_s* T1inv_p_create(const struct mdb_irgnm_l1_conf*
 	md_select_dims(DIMS, ~COIL_FLAG, img_dims, dims);
 
         // jointly penalize the first few maps
-        long penalized_dims = img_dims[COEFF_DIM] - conf->not_wav_maps;
+        long penalized_dims = MAX(1, img_dims[COEFF_DIM] - conf->not_wav_maps);
 
         debug_printf(DP_DEBUG2, "nr. of penalized maps: %d\n", penalized_dims);
 
         img_dims[COEFF_DIM] = penalized_dims;
 
-	auto prox1 = create_prox(img_dims, COEFF_FLAG, 1.);
+	auto prox1 = create_prox(img_dims, COEFF_FLAG, conf->l1val);
 	auto prox2 = operator_p_ref(prox1);
 
 	if (0 < conf->not_wav_maps) {
@@ -431,20 +438,30 @@ static const struct operator_p_s* T1inv_p_create(const struct mdb_irgnm_l1_conf*
 		map_dims[COEFF_DIM] = conf->not_wav_maps;
 
 		auto prox3 = prox_zero_create(DIMS, map_dims);
-		prox2 = operator_p_stack_FF(COEFF_DIM, COEFF_DIM, prox2, prox3);
+
+		if (conf->not_wav_maps < dims[COEFF_DIM]) {
+
+			prox2 = operator_p_stack_FF(COEFF_DIM, COEFF_DIM, prox2, prox3);
+
+		} else {
+
+			operator_p_free(prox2);
+			prox2 = prox3;
+		}
 	}
 
 	if (conf->auto_norm) {
 
 		auto prox3 = op_p_auto_normalize(prox2, ~(COEFF_FLAG | TIME_FLAG | TIME2_FLAG | SLICE_FLAG), NORM_L2);
+
 		operator_p_free(prox2);
+
 		prox2 = prox3;
 	}
 
 	struct T1inv_s idata = {
 
-		{ &TYPEID(T1inv_s) }, nlop_clone(nlop), conf,
-		N, M, 1.0, ndims, true, 0, prox1, prox2
+		{ &TYPEID(T1inv_s) }, nlop_clone(nlop), conf, N, M, 1.0, ndims, true, 0, prox1, prox2
 	};
 
 	data->data = idata;
@@ -469,6 +486,34 @@ static const struct operator_p_s* T1inv_p_create(const struct mdb_irgnm_l1_conf*
 }
 
 
+struct pu_data {
+
+	INTERFACE(iter_op_data);
+
+	int N;
+	const long* dims;
+	complex float* tmp;
+	int steps;
+	int pusteps;
+	float ratio;
+};
+
+DEF_TYPEID(pu_data);
+
+static void partial_update(iter_op_data* _data, float* _dst, const float* _src)
+{
+	auto data = CAST_DOWN(pu_data, _data);
+	complex float* dst = (complex float*)_dst;
+	const complex float* src = (const complex float*)_src;
+
+	if (++data->steps > data->pusteps)
+		return;
+
+	md_zsmul(data->N, data->dims, dst, src, data->ratio);
+	md_zaxpy(data->N, data->dims, dst, 1. - data->ratio, data->tmp);
+
+	md_copy(data->N, data->dims, data->tmp, dst, CFL_SIZE);
+}
 
 
 void mdb_irgnm_l1(const struct mdb_irgnm_l1_conf* conf,
@@ -534,12 +579,34 @@ void mdb_irgnm_l1(const struct mdb_irgnm_l1_conf* conf,
 		lsqr_conf.icont = lsqr_cont;
 
 		inv_op = lsqr2_create(&lsqr_conf, iter2_admm, CAST_UP(&iadmm_conf), NULL, &nlop->derivative[0][0],
-			 NULL, conf->ropts->r, thresh_ops, trafos, NULL);
+				 NULL, conf->ropts->r, thresh_ops, trafos, NULL);
 	}
+
+	complex float* tmp = NULL;
+
+	if (0 < conf->pusteps) {
+
+		tmp = md_alloc_sameplace(dm->N, dm->dims, CFL_SIZE, dst);
+		md_copy(dm->N, dm->dims, tmp, dst, CFL_SIZE);
+	}
+
+	struct pu_data pu_data = {
+
+		.INTERFACE.TYPEID = &TYPEID(pu_data),
+		.N = dm->N,
+		.dims = dm->dims,
+		.tmp = tmp,
+		.steps = 0,
+		.pusteps = conf->pusteps,
+		.ratio = conf->ratio,
+	};
 
 	iter4_irgnm2(CAST_UP(conf->c2), nlop,
 		N, dst, NULL, M, src, inv_op,
-		(struct iter_op_s){ NULL, NULL });
+		(struct iter_op_s){ partial_update, CAST_UP(&pu_data) });
+
+	if (NULL != tmp)
+		md_free(tmp);
 
 	operator_p_free(inv_op);
 

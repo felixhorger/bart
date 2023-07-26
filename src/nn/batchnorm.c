@@ -69,7 +69,6 @@ static void stats_fun(const nlop_data_t* _data, int N, complex float* args[N])
 	md_zsmul(data->codom->N, data->codom->dims, var, var, 1. / data->n);
 
 	md_zreal(data->codom->N, data->codom->dims, var, var);
-
 }
 
 static void stats_der_mean(const nlop_data_t* _data, unsigned int o, unsigned int i, complex float* dst, const complex float* src)
@@ -208,15 +207,15 @@ static void normalize_fun(const nlop_data_t* _data, int N, complex float* args[N
 
 	if (NULL == data->tmp)
 		data->tmp = md_alloc_sameplace(data->dom->N, data->dom->dims, data->dom->size, dst);
+
 	if (NULL == data->scale)
 		data->scale = md_alloc_sameplace(data->statdom->N, data->statdom->dims, data->statdom->size, dst);
 
 	md_zsadd(data->statdom->N, data->statdom->dims, data->scale, var, data->epsilon);
 	md_zreal(data->statdom->N, data->statdom->dims, data->scale, data->scale); //assert that sigma is real
-	//md_zsqrt(data->statdom->N, data->statdom->dims, data->scale, data->scale);
-	md_sqrt(data->statdom->N + 1, MD_REAL_DIMS(data->statdom->N, data->statdom->dims), (float*)data->scale, (float*)data->scale);
+	md_zspow(data->statdom->N, data->statdom->dims, data->scale, data->scale, -0.5);
 
-#ifdef USE_CUDA //FIXME: Optimize zsub2, zdiv2 for these strides
+#ifdef USE_CUDA //FIXME: Optimize zsub2 for these strides
 	if (cuda_ondevice(src)) {
 
 		complex float* tmp = md_alloc_sameplace(data->dom->N, data->dom->dims, CFL_SIZE, src);
@@ -224,22 +223,19 @@ static void normalize_fun(const nlop_data_t* _data, int N, complex float* args[N
 		md_copy2(data->dom->N, data->dom->dims, data->dom->strs, tmp, data->statdom->strs, mean, CFL_SIZE);
 		md_zsub(data->dom->N, data->dom->dims, data->tmp, src, tmp);
 
-		md_copy2(data->dom->N, data->dom->dims, data->dom->strs, tmp, data->statdom->strs, data->scale, CFL_SIZE);
-		md_zdiv(data->dom->N, data->dom->dims, dst, data->tmp, tmp);
-
 		md_free(tmp);
 	} else
 #endif
 	{
-		md_zsub2(data->dom->N, data->dom->dims, data->dom->strs, data->tmp, data->dom->strs, src, data->statdom->strs, mean);
-		md_zdiv2(data->dom->N, data->dom->dims, data->dom->strs, dst, data->dom->strs, data->tmp, data->statdom->strs, data->scale);
+		md_zsub2(data->dom->N, data->dom->dims, data->dom->strs, data->tmp, data->dom->strs, src, data->statdom->strs, mean);	
 	}
+
+	md_zmul2(data->dom->N, data->dom->dims, data->dom->strs, dst, data->dom->strs, data->tmp, data->statdom->strs, data->scale);
 
 	bool der3 = nlop_der_requested(_data, 2, 0);
 
 	if (!der3)
 		normalize_clear_der_var(data);
-
 }
 
 static void normalize_deradj_src(const nlop_data_t* _data, unsigned int o, unsigned int i, complex float* dst, const complex float* src)
@@ -249,18 +245,7 @@ static void normalize_deradj_src(const nlop_data_t* _data, unsigned int o, unsig
 
 	const auto data = CAST_DOWN(normalize_s, _data);
 
-#ifdef USE_CUDA //FIXME: Optimize zsub2, zdiv2 for these strides
-	if (cuda_ondevice(src)) {
-
-		complex float* tmp = md_alloc_sameplace(data->dom->N, data->dom->dims, CFL_SIZE, src);
-
-		md_copy2(data->dom->N, data->dom->dims, data->dom->strs, tmp, data->statdom->strs, data->scale, CFL_SIZE);
-		md_zdiv(data->dom->N, data->dom->dims, dst, src, tmp);
-
-		md_free(tmp);
-	} else
-#endif
-		md_zdiv2(data->dom->N, data->dom->dims, data->dom->strs, dst, data->dom->strs, src, data->statdom->strs, data->scale);
+	md_zmul2(data->dom->N, data->dom->dims, data->dom->strs, dst, data->dom->strs, src, data->statdom->strs, data->scale);
 }
 
 static void normalize_der_mean(const nlop_data_t* _data, unsigned int o, unsigned int i, complex float* dst, const complex float* src)
@@ -269,7 +254,7 @@ static void normalize_der_mean(const nlop_data_t* _data, unsigned int o, unsigne
 	UNUSED(i);
 
 	const auto data = CAST_DOWN(normalize_s, _data);
-	md_zdiv2(data->dom->N, data->dom->dims, data->dom->strs, dst, data->statdom->strs, src, data->statdom->strs, data->scale);
+	md_zmul2(data->dom->N, data->dom->dims, data->dom->strs, dst, data->statdom->strs, src, data->statdom->strs, data->scale);
 	md_zsmul(data->dom->N, data->dom->dims, dst, dst, -1.);
 }
 
@@ -280,25 +265,10 @@ static void normalize_adj_mean(const nlop_data_t* _data, unsigned int o, unsigne
 
 	const auto data = CAST_DOWN(normalize_s, _data);
 
-#ifdef USE_CUDA //FIXME: Optimize zsub2, zdiv2 for these strides
-	if (cuda_ondevice(src)) {
+	md_clear(data->statdom->N, data->statdom->dims, dst, data->statdom->size);
+	md_zadd2(data->dom->N, data->dom->dims, data->statdom->strs, dst, data->statdom->strs, dst, data->dom->strs, src);
 
-		long tdims[data->dom->N];
-		md_select_dims(data->dom->N, data->flags, tdims, data->dom->dims);
-
-		complex float* tmp = md_alloc_sameplace(data->dom->N, tdims, CFL_SIZE, src);
-		md_zfill(data->dom->N, tdims, tmp, 1.);
-		md_ztenmul(data->dom->N, data->statdom->dims, dst, data->dom->dims, src, tdims, tmp);
-
-		md_free(tmp);
-	} else
-#endif
-	{
-		md_clear(data->statdom->N, data->statdom->dims, dst, data->statdom->size);
-		md_zadd2(data->dom->N, data->dom->dims, data->statdom->strs, dst, data->statdom->strs, dst, data->dom->strs, src);
-	}
-
-	md_zdiv(data->statdom->N, data->statdom->dims, dst, dst, data->scale);
+	md_zmul(data->statdom->N, data->statdom->dims, dst, dst, data->scale);
 	md_zsmul(data->statdom->N, data->statdom->dims, dst, dst, -1.);
 }
 
@@ -315,14 +285,12 @@ static void normalize_der_var(const nlop_data_t* _data, unsigned int o, unsigned
 
 	md_zreal(data->statdom->N, data->statdom->dims, tmp, src);
 
-	md_zdiv(data->statdom->N, data->statdom->dims, tmp, tmp, data->scale);
-	md_zdiv(data->statdom->N, data->statdom->dims, tmp, tmp, data->scale);
-	md_zdiv(data->statdom->N, data->statdom->dims, tmp, tmp, data->scale);
+	md_zmul(data->statdom->N, data->statdom->dims, tmp, tmp, data->scale);
+	md_zmul(data->statdom->N, data->statdom->dims, tmp, tmp, data->scale);
+	md_zmul(data->statdom->N, data->statdom->dims, tmp, tmp, data->scale);
 	md_zsmul(data->statdom->N, data->statdom->dims, tmp, tmp, -.5);
 
 	md_zmul2(data->dom->N, data->dom->dims, data->dom->strs, dst, data->statdom->strs, tmp, data->dom->strs, data->tmp);
-
-
 
 	md_free(tmp);
 }
@@ -350,9 +318,9 @@ static void normalize_adj_var(const nlop_data_t* _data, unsigned int o, unsigned
 	md_free(tmp);
 #endif
 
-	md_zdiv(data->statdom->N, data->statdom->dims, dst, dst, data->scale);
-	md_zdiv(data->statdom->N, data->statdom->dims, dst, dst, data->scale);
-	md_zdiv(data->statdom->N, data->statdom->dims, dst, dst, data->scale);
+	md_zmul(data->statdom->N, data->statdom->dims, dst, dst, data->scale);
+	md_zmul(data->statdom->N, data->statdom->dims, dst, dst, data->scale);
+	md_zmul(data->statdom->N, data->statdom->dims, dst, dst, data->scale);
 	md_zsmul(data->statdom->N, data->statdom->dims, dst, dst, -.5);
 	md_zreal(data->statdom->N, data->statdom->dims, dst, dst);
 
@@ -453,8 +421,10 @@ static void bn_init(struct bn_s* data, const complex float* ref) {
 
 		if (NULL == data->der_out)
 			data->der_out = md_alloc_sameplace(data->dom->N, data->dom->dims, data->dom->size, ref);
+
 		if (NULL == data->der_scale)
 			data->der_scale = md_alloc_sameplace(data->stat_dom->N, data->stat_dom->dims, data->stat_dom->size, ref);
+
 	} else {
 
 		bn_clear_der(CAST_UP(data));
@@ -517,6 +487,7 @@ static void bn_fun(const nlop_data_t* _data, int D, complex float* args[D])
 
 		md_copy(N, data->dom->dims, data->der_out, out, CFL_SIZE);
 		md_copy(N, data->stat_dom->dims, data->der_scale, scale, CFL_SIZE);
+
 	} else {
 
 		bn_clear_der(_data);
@@ -657,26 +628,28 @@ const struct nlop_s* nlop_batchnorm_create(int N, const long dims[N], unsigned l
 
 	switch (status) {
 
-		case STAT_TRAIN:
+	case STAT_TRAIN:
 
-			result = nlop_bn_create(N, dims, flags, epsilon);
-			result = nlop_append_singleton_dim_out_F(result, 1);
-			result = nlop_append_singleton_dim_out_F(result, 2);
-			result = nlop_stack_outputs_F(result, 1, 2, N);
-			iov = nlop_generic_codomain(result, 1);
-			result = nlop_combine_FF(result, nlop_del_out_create(iov->N, iov->dims));
-			return result;
+		result = nlop_bn_create(N, dims, flags, epsilon);
+		result = nlop_append_singleton_dim_out_F(result, 1);
+		result = nlop_append_singleton_dim_out_F(result, 2);
+		result = nlop_stack_outputs_F(result, 1, 2, N);
+		iov = nlop_generic_codomain(result, 1);
+		result = nlop_combine_FF(result, nlop_del_out_create(iov->N, iov->dims));
 
-		case STAT_TEST:
+		return result;
 
-			result = nlop_normalize_create(N, dims, flags, epsilon);
-			result = nlop_append_singleton_dim_in_F(result, 1);
-			result = nlop_append_singleton_dim_in_F(result, 2);
-			result = nlop_stack_inputs_F(result, 1, 2, N);
-			iov = nlop_generic_domain(result, 1);
-			result = nlop_combine_FF(result, nlop_from_linop_F(linop_identity_create(iov->N, iov->dims)));
-			result = nlop_dup_F(result, 1, 2);
-			return result;
+	case STAT_TEST:
+
+		result = nlop_normalize_create(N, dims, flags, epsilon);
+		result = nlop_append_singleton_dim_in_F(result, 1);
+		result = nlop_append_singleton_dim_in_F(result, 2);
+		result = nlop_stack_inputs_F(result, 1, 2, N);
+		iov = nlop_generic_domain(result, 1);
+		result = nlop_combine_FF(result, nlop_from_linop_F(linop_identity_create(iov->N, iov->dims)));
+		result = nlop_dup_F(result, 1, 2);
+
+		return result;
 	}
 
 	assert(0);

@@ -1,6 +1,6 @@
 /* Copyright 2013. The Regents of the University of California.
  * Copyright 2019-2021. Uecker Lab, University Medical Center Goettingen.
- * Copyright 2021-2022. Institute of Medical Engineering. Graz University of Technology.
+ * Copyright 2021-2023. Institute of Biomedical Imaging. TU Graz.
  * All rights reserved. Use of this source code is governed by
  * a BSD-style license which can be found in the LICENSE file.
  *
@@ -111,6 +111,8 @@ int main_moba(int argc, char* argv[argc])
 	const char* traj_file = NULL;
 	const char* init_file = NULL;
         const char* input_b1 = NULL;
+	const char* input_b0 = NULL;
+	const char* input_sens = NULL;
 
 	struct moba_conf conf = moba_defaults;
 	struct opt_reg_s ropts;
@@ -159,7 +161,6 @@ int main_moba(int argc, char* argv[argc])
                 OPTL_FLOAT(0, "sl-grad", &(data.sim.grad.sl_gradient_strength), "float", "Strength of slice-selection gradient [T/m]"),
                 OPTL_FLOAT(0, "slice-thickness", &(data.sim.seq.slice_thickness), "float", "Thickness of simulated slice. [m]"),
 		OPTL_FLOAT(0, "nom-slice-thickness", &(data.sim.seq.nom_slice_thickness), "float", "Nominal thickness of simulated slice. [m]"),
-
         };
 
         struct opt_s sim_opts[] = {
@@ -178,7 +179,16 @@ int main_moba(int argc, char* argv[argc])
                 OPTL_FLVEC4(0, "pscale", &(data.other.scale), "s1:s2:s3:s4", "Scaling of parameters in model-based reconstruction"),
                 OPTL_FLVEC4(0, "pinit", &(data.other.initval), "i1:i2:i3:i4", "Initial values of parameters in model-based reconstruction"),
                 OPTL_INFILE(0, "b1map", &input_b1, "[deg]", "Input B1 map as cfl file"),
+		OPTL_INFILE(0, "b0map", &input_b0, "[rad/s]", "Input B0 map as cfl file"),
+		OPTL_INFILE(0, "ksp-sens", &input_sens, "", "Input kspace sensitivities"),
                 OPTL_FLVEC4(0, "tvscale", &tvscales, "s1:s2:s3:s4", "Scaling of derivatives in TV penalty"),
+		OPTL_FLOAT(0, "b1-sobolev-a", &(data.other.b1_sobolev_a), "", "(a in 1 + a * \\Laplace^-b/2)"),
+		OPTL_FLOAT(0, "b1-sobolev-b", &(data.other.b1_sobolev_b), "", "(a in 1 + a * \\Laplace^-b/2)"),
+		OPTL_FLOAT(0, "ode-tol", &(data.sim.other.ode_tol), "f", "ODE tolerance value [def: 1e-5]"),
+		OPTL_FLOAT(0, "stm-tol", &(data.sim.other.stm_tol), "f", "STM tolerance value [def: 1e-6]"),
+		OPTL_SET(0,"no-sens-l2", &data.other.no_sens_l2, "(Turn off l2 regularization on coils)"),
+		OPTL_SET(0,"no-sens-deriv", &data.other.no_sens_deriv, "(Turn off coil updates)"),
+		OPTL_SET(0,"export-ksp-sens", &data.other.export_ksp_coils, "(Export coil sensitivities in ksp)"),
         };
 
 	opt_reg_init(&ropts);
@@ -211,6 +221,12 @@ int main_moba(int argc, char* argv[argc])
 		OPT_SET('M', &conf.sms, "Simultaneous Multi-Slice reconstruction"),
 		OPT_SET('O', &conf.out_origin_maps, "(Output original maps from reconstruction without post processing)"),
 		OPT_SET('g', &conf.use_gpu, "use gpu"),
+		OPTL_ULONG(0, "positive-maps", &conf.constrained_maps, "flag", "Maps with positivity contraint as FLAG!"),
+		OPTL_ULONG(0, "not-wav-maps", &conf.not_wav_maps, "d", "Maps removed from wavelet denoising (counted from back!)"),
+		OPTL_ULONG(0, "l2-on-parameters", &conf.l2para, "flag", "Flag for parameter maps with l2 norm"),
+		OPTL_UINT(0, "pusteps", &conf.pusteps, "ud", "Number of partial update steps for IRGNM"),
+		OPTL_FLOAT(0, "ratio", &conf.ratio, "f:[0;1]", "Ratio of partial updates: ratio*<updated-map> + (1-ratio)*<previous-map>"),
+		OPTL_FLOAT(0, "l1val", &conf.l1val, "f", "Regularization scaling of l1 wavelet (default: 1.)"),
 		OPTL_INT(0, "multi-gpu", &conf.num_gpu, "num", "number of gpus to use"),
 		OPT_INFILE('I', &init_file, "init", "File for initialization"),
 		OPT_INFILE('t', &traj_file, "traj", "K-space trajectory"),
@@ -373,11 +389,28 @@ int main_moba(int argc, char* argv[argc])
 
 	complex float* mask = NULL;
 	bool sensout = (NULL != sens_file);
-	complex float* sens = (sensout ? create_cfl : anon_cfl)(sensout ? sens_file : "", DIMS, coil_dims);
+	complex float* sens = (sensout ? create_cfl : anon_cfl)(sens_file, DIMS, coil_dims);
 
+	// Input sensitivities
+
+	const complex float* in_sens = NULL;
+	long in_sens_dims[DIMS];
+
+
+	if (NULL != input_sens) {
+
+		in_sens = load_cfl(input_sens, DIMS, in_sens_dims);
+
+		assert(md_check_compat(DIMS, ~(FFT_FLAGS|COIL_FLAG), coil_dims, in_sens_dims));
+
+		md_copy(DIMS, coil_dims, sens, in_sens, CFL_SIZE);
+
+	} else {
+
+		md_clear(DIMS, coil_dims, sens, CFL_SIZE);
+	}
 
 	md_zfill(DIMS, img_dims, img, 1.0);
-	md_clear(DIMS, coil_dims, sens, CFL_SIZE);
 
 	complex float* k_grid_data = anon_cfl("", DIMS, grid_dims);
 
@@ -504,7 +537,19 @@ int main_moba(int argc, char* argv[argc])
 
 		b1 = load_cfl(input_b1, DIMS, b1_dims);
 
-		assert(md_check_bounds(DIMS, FFT_FLAGS, grid_dims, b1_dims));
+		assert(md_check_compat(DIMS, ~FFT_FLAGS, grid_dims, b1_dims));
+	}
+
+	// Load passed B0
+
+        const complex float* b0 = NULL;
+	long b0_dims[DIMS];
+
+	if (NULL != input_b0) {
+
+		b0 = load_cfl(input_b0, DIMS, b0_dims);
+
+		assert(md_check_compat(DIMS, ~FFT_FLAGS, grid_dims, b0_dims));
 	}
 
 	// scaling
@@ -581,9 +626,16 @@ int main_moba(int argc, char* argv[argc])
 
         // Transform B1 map from image to k-space and add k-space to initialization array (img)
 
-	if (MDB_BLOCH == conf.mode) {
+	unsigned long sobolev_flag = 0;
 
-		pos[COEFF_DIM] = 3;
+	sobolev_flag |= (MDB_T1_PHY == conf.mode) ? MD_BIT(2) : 0;
+	sobolev_flag |= (MDB_BLOCH == conf.mode) ? MD_BIT(3) : 0;
+
+
+	for (pos[COEFF_DIM] = 0; pos[COEFF_DIM] < img_dims[COEFF_DIM]; pos[COEFF_DIM]++) {
+
+		if (!MD_IS_SET(sobolev_flag, pos[COEFF_DIM]))
+			continue;
 
 		const struct linop_s* linop_fftc = linop_fftc_create(DIMS, tmp_dims, FFT_FLAGS);
 
@@ -609,14 +661,14 @@ int main_moba(int argc, char* argv[argc])
 
 		md_copy(DIMS, TI_dims, TI_gpu, TI, CFL_SIZE);
 
-		moba_recon(&conf, &data, dims, img, sens, pattern, mask, TI_gpu, b1, kspace_gpu, init);
+		moba_recon(&conf, &data, dims, img, sens, pattern, mask, TI_gpu, b1, b0, kspace_gpu, init);
 
 		md_free(kspace_gpu);
 		md_free(TI_gpu);
 
 	} else
 #endif
-	moba_recon(&conf, &data, dims, img, sens, pattern, mask, TI, b1, k_grid_data, init);
+	moba_recon(&conf, &data, dims, img, sens, pattern, mask, TI, b1, b0, k_grid_data, init);
 
         // Rescale estimated parameter maps
 
@@ -627,6 +679,9 @@ int main_moba(int argc, char* argv[argc])
 		md_copy_block(DIMS, pos, tmp_dims, tmp, img_dims, img, CFL_SIZE);
 
 		md_zsmul(DIMS, tmp_dims, tmp, tmp, (data.other.scale[i] ?: 1.));
+
+		if ((MDB_BLOCH == conf.mode) && (3 == i))
+			md_zsadd(DIMS, tmp_dims, tmp, tmp, 1.);
 
 		md_copy_block(DIMS, pos, img_dims, img, tmp_dims, tmp, CFL_SIZE);
 	}
@@ -647,8 +702,14 @@ int main_moba(int argc, char* argv[argc])
 	if (NULL != init_file)
 		unmap_cfl(DIMS, init_dims, init);
 
-        if(NULL != input_b1)
+        if (NULL != input_b1)
 		unmap_cfl(DIMS, b1_dims, b1);
+
+	if (NULL != input_b0)
+		unmap_cfl(DIMS, b0_dims, b0);
+
+	if (NULL != input_sens)
+		unmap_cfl(DIMS, in_sens_dims, in_sens);
 
 	double recosecs = timestamp() - start_time;
 

@@ -9,6 +9,9 @@
 extern struct linop_s* linop_cdiag_create(unsigned int N, const long dims[__VLA(N)], unsigned int flags, const _Complex float* diag);
 extern struct linop_s* linop_rdiag_create(unsigned int N, const long dims[__VLA(N)], unsigned int flags, const _Complex float* diag);
 extern void linop_gdiag_set_diag(const struct linop_s* lop, int N, const long ddims[__VLA(N)], const _Complex float* diag);
+extern void linop_gdiag_set_diag_F(const struct linop_s* lop, int N, const long ddims[__VLA(N)], const _Complex float* diag);
+extern void linop_gdiag_set_diag_ref(const struct linop_s* lop, int N, const long ddims[__VLA(N)], const _Complex float* diag);
+
 extern struct linop_s* linop_scale_create(unsigned int N, const long dims[N], const _Complex float scale);
 extern struct linop_s* linop_zconj_create(unsigned int N, const long dims[N]);
 extern struct linop_s* linop_zreal_create(unsigned int N, const long dims[N]);
@@ -26,10 +29,13 @@ extern struct linop_s* linop_permute_create(unsigned int N, const int order[__VL
 extern struct linop_s* linop_transpose_create(int N, int a, int b, const long dims[N]);
 
 
-extern struct linop_s* linop_fft_create(int N, const long dims[__VLA(N)], unsigned int flags);
-extern struct linop_s* linop_ifft_create(int N, const long dims[__VLA(N)], unsigned int flags);
+extern struct linop_s* linop_fft_create(int N, const long dims[__VLA(N)], unsigned long flags);
+extern struct linop_s* linop_ifft_create(int N, const long dims[__VLA(N)], unsigned long flags);
 extern struct linop_s* linop_fftc_create(int N, const long dims[__VLA(N)], unsigned int flags);
 extern struct linop_s* linop_ifftc_create(int N, const long dims[__VLA(N)], unsigned int flags);
+
+extern struct linop_s* linop_fft_generic_create(int N, const long dims[N], unsigned long flags, unsigned long center_flags, unsigned long unitary_flags, unsigned long pre_flag, const _Complex float* pre_diag, unsigned long post_flag, const _Complex float* post_diag);
+extern struct linop_s* linop_ifft_generic_create(int N, const long dims[N], unsigned long flags, unsigned long center_flags, unsigned long unitary_flags, unsigned long pre_flag, const _Complex float* pre_diag, unsigned long post_flag, const _Complex float* post_diag);
 
 extern struct linop_s* linop_cdf97_create(int N, const long dims[__VLA(N)], unsigned int flag);
 

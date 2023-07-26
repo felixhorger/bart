@@ -1,5 +1,6 @@
 /* Copyright 2015. The Regents of the University of California.
  * Copyright 2016-2019. Martin Uecker.
+ * Copyright 2023. Institute of Biomedical Imaging. TU Graz.
  * All rights reserved. Use of this source code is governed by
  * a BSD-style license which can be found in the LICENSE file.
  *
@@ -388,7 +389,8 @@ static void identity_apply(const operator_data_t* _data, unsigned int N, void* a
 {
 	const auto d = CAST_DOWN(identity_s, _data);
 	assert(2 == N);
-	md_copy2(d->domain->N, d->domain->dims, d->codomain->strs, args[0], d->domain->strs, args[1], d->domain->size);
+	if (args[0] != args[1])
+		md_copy2(d->domain->N, d->domain->dims, d->codomain->strs, args[0], d->domain->strs, args[1], d->domain->size);
 }
 
 
@@ -533,6 +535,7 @@ const struct operator_s* get_in_reshape(const struct operator_s* op) {
 	return NULL;
 }
 
+
 struct zero_s {
 
 	INTERFACE(operator_data_t);
@@ -619,7 +622,7 @@ void operator_generic_apply_unchecked(const struct operator_s* op, unsigned int 
 	debug_trace("LEAVE %p\n", op->apply);
 }
 
-void operator_generic_apply_parallel_unchecked(int D, const struct operator_s* op[__VLA(D)], unsigned int N, void* args[__VLA(D)][N], int num_threads)
+void operator_generic_apply_parallel_unchecked(int D, const struct operator_s* op[D], unsigned int N, void* args[D][N], int num_threads)
 {
 #ifdef _OPENMP
 	if (0 < num_threads) {
@@ -678,7 +681,7 @@ void operator_apply_parallel_unchecked(int D, const struct operator_s* op[D], co
 	operator_generic_apply_parallel_unchecked(D, op, 2, args, num_threads);
 }
 
-void operator_apply2(const struct operator_s* op, unsigned int ON, const long odims[ON], const long ostrs[ON], complex float* dst, const long IN, const long idims[IN], const long istrs[ON], const complex float* src)
+void operator_apply2(const struct operator_s* op, unsigned int ON, const long odims[ON], const long ostrs[ON], complex float* dst, const long IN, const long idims[IN], const long istrs[IN], const complex float* src)
 {
 	assert(2 == op->N);
 	assert(iovec_check(op->domain[1], IN, idims, istrs));
@@ -891,8 +894,7 @@ static void op_loop_fun(const operator_data_t* _data, unsigned int N, void* args
 
 	if (data->gpu) {
 #if defined(USE_CUDA) && defined(_OPENMP)
-		int nr_cuda_devices = cuda_num_devices();
-		omp_set_num_threads(nr_cuda_devices * 2);
+		omp_set_num_threads(cuda_num_devices() * cuda_num_streams());
 //		fft_set_num_threads(1);
 #else
 		error("Both OpenMP and CUDA are necessary for op_loop_fun. At least one was not found.\n");
@@ -1023,6 +1025,7 @@ const struct operator_s* operator_loop(unsigned int D, const long dims[D], const
 	return operator_loop_parallel(D, dims, op, 0u, false);
 }
 
+enum COPY_LOCATION { CL_SAMEPLACE, CL_DEVICE, CL_CPU };
 
 struct copy_data_s {
 
@@ -1030,34 +1033,131 @@ struct copy_data_s {
 
 	const struct operator_s* op;
 
-	const void* ref;
-
-	unsigned int N;
+	int N;
 	const long** strs;
+
+	int device;
+	// -1 selects device by thread id
+	// -2 does not change the device at all
+	
+	enum COPY_LOCATION* loc;
+
+	_Bool copy_output;
+	// select if operator reads data from output
 };
 
 static DEF_TYPEID(copy_data_s);
+
+
+#if defined(USE_CUDA) && defined(_OPENMP)
+static bool gpulock_init = false;
+static omp_nest_lock_t gpulock[MAX_CUDA_DEVICES];
+
+static omp_nest_lock_t* set_gpu_lock(int gpun)
+{
+	if (0 == omp_get_level())
+		return NULL;
+	
+	if (1 < omp_get_level())
+		error("Changing GPU is only supported for OMP levels 0 and 1!\n");
+	
+	#pragma omp critical(gpulock_init)
+	{
+		if (!gpulock_init)
+		{
+
+			for (int i = 0; i < MAX_CUDA_DEVICES; i++)
+				omp_init_nest_lock(&gpulock[i]);
+			gpulock_init = true;
+		}
+	}
+
+	for (int i = 0; i < MAX_CUDA_DEVICES; i++) {
+
+		int count = omp_test_nest_lock(&gpulock[i]);
+		if (1 == count)
+			omp_unset_nest_lock(&gpulock[i]);
+		if (1 < count)
+			return &gpulock[i];
+	}
+
+	omp_set_nest_lock(&gpulock[gpun]);
+	return &gpulock[gpun];
+}
+#endif
+
 
 static void copy_fun(const operator_data_t* _data, unsigned int N, void* args[N])
 {
 	const auto data = CAST_DOWN(copy_data_s, _data);
 	const struct operator_s* op = data->op;
 	void* ptr[N];
-	bool allocated[N];
 
 	assert(N == operator_nr_args(op));
+
+#ifdef USE_CUDA
+	int olddevice = (0 == cuda_num_devices()) ? -1 : cuda_get_device();
+	int oldstream = (0 == cuda_num_devices()) ? 0 : cuda_get_stream_id();
+	int gpun = (0 == cuda_num_devices()) ? -1 : cuda_get_device();
+
+	if (-2 < data->device) {
+
+		if (0 == cuda_num_devices())
+			error("No GPU initialized!\n");
+
+		if (-1 != data->device)
+			gpun = data->device;
+		else
+#ifdef _OPENMP
+		 	gpun = omp_get_thread_num();
+#else
+			gpun = 0;
+#endif
+		gpun = gpun % (cuda_num_devices());
+		cuda_set_device(gpun);
+		cuda_set_stream(1);
+	}
+#endif
+	
 
 	for (unsigned int i = 0; i < N; i++) {
 
 		const struct iovec_s* io = operator_arg_domain(op, i);
 
-		allocated[i] = (!md_check_equal_dims(io->N, io->strs, data->strs[i], md_nontriv_dims(io->N, io->dims)) || ((NULL != data->ref) && !md_is_sameplace(data->ref, args[i])));
+		ptr[i] = NULL;
 
-		if (allocated[i]) {
+		if(NULL == args[i])
+			continue;
 
-			ptr[i] = md_alloc_sameplace(io->N, io->dims, io->size, NULL == data->ref ? args[i] : data->ref);
+		bool allocate = !md_check_equal_dims(io->N, io->strs, data->strs[i], md_nontriv_dims(io->N, io->dims));
 
-			if (!op->io_flags[i])
+#ifdef USE_CUDA
+		allocate |= ((cuda_get_device_num(args[i]) != cuda_get_device()));
+
+		switch (data->loc[i]) {
+		case CL_CPU:
+			if (allocate || cuda_ondevice(args[i]))
+				ptr[i] = md_alloc(io->N, io->dims, io->size);
+			break;
+		case CL_SAMEPLACE:
+			if (allocate)
+				ptr[i] = md_alloc_sameplace(io->N, io->dims, io->size, args[i]);
+			break;
+		case CL_DEVICE:
+
+			if (allocate || !cuda_ondevice(args[i]))
+				ptr[i] = md_alloc_gpu(io->N, io->dims, io->size);
+			break;
+		default: assert(0);
+		}
+#else
+		if (allocate)
+			ptr[i] = md_alloc(io->N, io->dims, io->size);
+#endif
+
+		if (NULL != ptr[i]) {
+
+			if (data->copy_output || !op->io_flags[i])
 				md_copy2(io->N, io->dims, io->strs, ptr[i], data->strs[i], args[i], io->size);
 		} else {
 
@@ -1065,18 +1165,40 @@ static void copy_fun(const operator_data_t* _data, unsigned int N, void* args[N]
 		}
 	}
 
-	operator_generic_apply_unchecked(op, N, ptr);
+#if defined(USE_CUDA) && defined(_OPENMP)
+	if (-2 < data->device) {
 
-	for (unsigned int i = 0; i < N; i++) {
+		//FIXME: Full concurrent stream execution should be possible (without locks and sync)
+		omp_nest_lock_t* lock = set_gpu_lock(gpun);	
+		debug_printf(DP_DEBUG3, "\tlock acquired by       thread %d, using gpu %d\n", omp_get_thread_num(), gpun);
+		operator_generic_apply_unchecked(op, N, ptr);
+		debug_printf(DP_DEBUG3, "\tlock to be released by thread %d, using gpu %d\n", omp_get_thread_num(), gpun);
+		
+		if (NULL != lock)
+			omp_unset_nest_lock(lock);
+
+	} else
+#endif
+		operator_generic_apply_unchecked(op, N, ptr);
+
+
+	for (int i = 0; i < (int)N; i++) {
+
+		if (args[i] == ptr[i])
+			continue;
 
 		const struct iovec_s* io = operator_arg_domain(op, i);
 
-		if (op->io_flags[i] && allocated[i])
+		if (op->io_flags[i])
 			md_copy2(io->N, io->dims, data->strs[i], args[i], io->strs, ptr[i], io->size);
 
-		if (allocated[i])
-			md_free(ptr[i]);
+		md_free(ptr[i]);
 	}
+
+#ifdef USE_CUDA
+	cuda_set_device(olddevice);
+	cuda_set_stream(oldstream);
+#endif
 }
 
 static void copy_del(const operator_data_t* _data)
@@ -1084,28 +1206,68 @@ static void copy_del(const operator_data_t* _data)
 	const auto data = CAST_DOWN(copy_data_s, _data);
 
 	operator_free(data->op);
-	md_free(data->ref);
 
-	for (unsigned int i = 0; i < data->N; i++)
+	for (int i = 0; i < data->N; i++)
 		xfree(data->strs[i]);
 
 	xfree(data->strs);
+	xfree(data->loc);
 	xfree(data);
 }
 
-const struct operator_s* operator_copy_wrapper_sameplace(unsigned int N, const long* strs[N], const struct operator_s* op, const void* ref)
+static const struct graph_s* copy_wrapper_graph_create(const struct operator_s* op)
 {
-	assert(N == operator_nr_args(op));
+	auto data = CAST_DOWN(copy_data_s, op->data);
+
+	auto subgraph = operator_get_graph(data->op);
+	auto result = create_graph_container(op, "coppy wrapper", subgraph);
+
+	return result;
+}
+
+
+// -2 == device: use current device
+// -1 == device: use device selected by thread
+//  0 <= device: use specified device
+static const struct operator_s* operator_copy_wrapper_generic(int N, const long* strs[N], enum COPY_LOCATION loc[N], const struct operator_s* op, int device, bool copy_output)
+{
+	assert(N == (int)operator_nr_args(op));
+
+	bool keep_strs = true;
+	for (int i = 0; i < (int)N; i++)
+		keep_strs = keep_strs && (NULL == strs[i]);
+
+	// merge gpu wrapper with copy wrpper (stides)
+	if (keep_strs && (-2 < device) && (NULL != CAST_MAYBE(copy_data_s, op->data))) {
+
+		auto data = CAST_DOWN(copy_data_s, op->data);
+
+		if (-2 == data->device) {
+
+			enum COPY_LOCATION loc2[N];
+			for (int i = 0; i < N; i++)
+				loc2[i] = (CL_CPU == data->loc[i]) ? CL_CPU : loc[i];
+			
+			return operator_copy_wrapper_generic(N, data->strs, loc2, data->op, device, data->copy_output);
+		}
+	}
 
 	PTR_ALLOC(struct copy_data_s, data);
 	SET_TYPEID(copy_data_s, data);
-	data->op = operator_ref(op);
 
 	unsigned int D[N];
 	const long* dims[N];
 	const long* (*strs2)[N] = TYPE_ALLOC(const long*[N]);
 
-	for (int i = 0; i < (int)N; i++) {
+	data->op = operator_ref(op);
+
+	data->N = N;
+	data->strs = *strs2;
+	data->loc = *TYPE_ALLOC(enum COPY_LOCATION[N]);
+	data->device = device;
+	data->copy_output = copy_output;
+
+	for (int i = 0; i < N; i++) {
 
 		const struct iovec_s* io = operator_arg_domain(op, i);
 
@@ -1113,7 +1275,7 @@ const struct operator_s* operator_copy_wrapper_sameplace(unsigned int N, const l
 		dims[i] = io->dims;
 
 		long (*strsx)[io->N] = TYPE_ALLOC(long[io->N]);
-		md_copy_strides(io->N, *strsx, strs[i]);
+		md_copy_strides(io->N, *strsx, (NULL == strs[i]) ? io->strs : strs[i]);
 		(*strs2)[i] = *strsx;
 
 		// check for trivial strides
@@ -1124,18 +1286,11 @@ const struct operator_s* operator_copy_wrapper_sameplace(unsigned int N, const l
 		for (int i = 0; i < io->N; i++)
 			if (1 != io->dims[i])
 				assert(io->strs[i] == tstrs[i]);
+
+		data->loc[i] = loc[i];
 	}
 
-	data->N = N;
-	data->strs = *strs2;
-	data->ref = (NULL == ref) ? NULL : md_alloc_sameplace(1, MD_DIMS(1), FL_SIZE, ref);
-
-	return operator_generic_create2(N, op->io_flags, D, dims, *strs2, CAST_UP(PTR_PASS(data)), copy_fun, copy_del, NULL);
-}
-
-const struct operator_s* operator_copy_wrapper(unsigned int N, const long* strs[N], const struct operator_s* op)
-{
-	return operator_copy_wrapper_sameplace(N, strs, op, NULL);
+	return operator_generic_create2(N, op->io_flags, D, dims, *strs2, CAST_UP(PTR_PASS(data)), copy_fun, copy_del, copy_wrapper_graph_create);
 }
 
 const struct operator_s* operator_cpu_wrapper(const struct operator_s* op)
@@ -1156,91 +1311,31 @@ const struct operator_s* operator_cpu_wrapper(const struct operator_s* op)
 }
 
 
-
-
-struct gpu_data_s {
-
-	INTERFACE(operator_data_t);
-
-	long move_flags;
-	const struct operator_s* op;
-};
-
-static DEF_TYPEID(gpu_data_s);
-
-
-
-#if defined(USE_CUDA) && defined(_OPENMP)
-#include <omp.h>
-#define MAX_CUDA_DEVICES 16
-omp_nest_lock_t gpulock[MAX_CUDA_DEVICES];
-#endif
-
-
-static void gpuwrp_fun(const operator_data_t* _data, unsigned int N, void* args[N])
+const struct operator_s* operator_copy_wrapper_sameplace(unsigned int N, const long* strs[N], const struct operator_s* op, const void* ref)
 {
-#if defined(USE_CUDA) && defined(_OPENMP)
-	const auto data = CAST_DOWN(gpu_data_s, _data);
-	const auto op = data->op;
-	void* gpu_ptr[N];
+	enum COPY_LOCATION loc[N];
+	for (int i = 0; i < (int)N; i++) {
+
+	#ifdef USE_CUDA
+		if (cuda_ondevice(ref))
+			loc[i] = CL_DEVICE;
+		else
+	#endif
+			loc[i] = CL_CPU;
+		
+		if (NULL == ref)
+			loc[i] = CL_SAMEPLACE;
+	}
 
 	assert(N == operator_nr_args(op));
 
-	debug_printf(DP_DEBUG3, "GPU start.\n");
-
-	int nr_cuda_devices = MIN(cuda_num_devices(), MAX_CUDA_DEVICES);
-	int gpun = omp_get_thread_num() % nr_cuda_devices;
-
-	cuda_set_device(gpun);
-
-	for (unsigned int i = 0; i < N; i++) {
-
-		if ((!MD_IS_SET(data->move_flags, i) || cuda_ondevice(args[i]))) {
-
-			gpu_ptr[i] = args[i];
-			continue;
-		}
-
-		const struct iovec_s* io = operator_arg_domain(op, i);
-
-		if (op->io_flags[i])
-			gpu_ptr[i] = md_alloc_gpu(io->N, io->dims, io->size);
-		else
-			gpu_ptr[i] = md_gpu_move(io->N, io->dims, args[i], io->size);
-	}
-
-	omp_set_nest_lock(&gpulock[gpun]);
-	operator_generic_apply_unchecked(op, N, gpu_ptr);
-	omp_unset_nest_lock(&gpulock[gpun]);
-
-	for (unsigned int i = 0; i < N; i++) {
-
-		if (gpu_ptr[i] == args[i])
-			continue;
-
-		const struct iovec_s* io = operator_arg_domain(op, i);
-
-		if (op->io_flags[i])
-			md_copy(io->N, io->dims, args[i], gpu_ptr[i], io->size);
-
-		md_free(gpu_ptr[i]);
-	}
-
-	debug_printf(DP_DEBUG3, "GPU end.\n");
-
-#else
-	UNUSED(_data); UNUSED(N); UNUSED(args);
-	error("Both OpenMP and CUDA are necessary for automatic GPU execution. At least one was not found.\n");
-#endif
+	return operator_copy_wrapper_generic(N, strs, loc, op, -2 /*=no change of device*/, false);
 }
 
-static void gpuwrp_del(const operator_data_t* _data)
+
+const struct operator_s* operator_copy_wrapper(unsigned int N, const long* strs[N], const struct operator_s* op)
 {
-	const auto data = CAST_DOWN(gpu_data_s, _data);
-
-	operator_free(data->op);
-
-	xfree(data);
+	return operator_copy_wrapper_sameplace(N, strs, op, NULL);
 }
 
 const struct operator_s* operator_gpu_wrapper2(const struct operator_s* op, long move_flags)
@@ -1248,33 +1343,38 @@ const struct operator_s* operator_gpu_wrapper2(const struct operator_s* op, long
 	unsigned int N = operator_nr_args(op);
 	assert(N <= 8 * sizeof(move_flags));
 
-	unsigned int D[N];
-	const long* dims[N];
+	enum COPY_LOCATION loc[N];
 	const long* strs[N];
 
-	for (unsigned int i = 0; i < N; i++) {
+	for (int i = 0; i < (int)N; i++) {
 
-		const struct iovec_s* io = operator_arg_domain(op, i);
-
-		D[i] = io->N;
-		dims[i] = io->dims;
-		strs[i] = io->strs;
+		loc[i] = (MD_IS_SET(move_flags, i)) ? CL_DEVICE : CL_SAMEPLACE;
+		strs[i] = NULL;
 	}
 
-	// op = operator_ref(op);
-	PTR_ALLOC(struct gpu_data_s, data);
-	SET_TYPEID(gpu_data_s, data);
-
-	data->move_flags = move_flags;
-	data->op = operator_ref(op);
-
-	return operator_generic_create2(N, op->io_flags, D, dims, strs, CAST_UP(PTR_PASS(data)), gpuwrp_fun, gpuwrp_del, NULL);
+	return operator_copy_wrapper_generic(N, strs, loc, op, -1 /*select gpu by thread*/, false);
 }
 
 
 const struct operator_s* operator_gpu_wrapper(const struct operator_s* op)
 {
 	return operator_gpu_wrapper2(op, ~0L);
+}
+
+
+const struct operator_s* operator_assign_gpu(const struct operator_s* op, int device)
+{
+	int N = op->N;
+	enum COPY_LOCATION loc[N];
+	const long* strs[N];
+
+	for (int i = 0; i < (int)N; i++) {
+
+		loc[i] = CL_DEVICE;
+		strs[i] = NULL;
+	}
+
+	return operator_copy_wrapper_generic(N, strs, loc, op, device, false);
 }
 
 
@@ -1383,6 +1483,16 @@ const struct operator_s* operator_combi_create(int N, const struct operator_s* x
 }
 
 
+const struct operator_s* operator_combi_create_FF(int N, const struct operator_s* x[N])
+{
+	auto ret = operator_combi_create(N, x);
+
+	for (int i = 0; i < N; i++)
+		operator_free(x[i]);
+
+	return ret;
+}
+
 
 
 struct operator_dup_s {
@@ -1490,7 +1600,12 @@ const struct operator_s* operator_dup_create(const struct operator_s* op, unsign
 	return operator_generic_create2(N - 1, io_flags, D, dims, strs, CAST_UP(PTR_PASS(data)), dup_apply, dup_del, operator_dup_get_graph);
 }
 
-
+const struct operator_s* operator_dup_create_F(const struct operator_s* op, unsigned int a, unsigned int b)
+{
+	auto ret = operator_dup_create(op, a, b);
+	operator_free(op);
+	return ret;
+}
 
 
 // FIXME: we should reimplement link in terms of dup and bind (caveat: gpu; io_flags)
@@ -1634,6 +1749,13 @@ const struct operator_s* operator_link_create(const struct operator_s* op, unsig
 	return operator_generic_create2(N - 2, io_flags, D, dims, strs, CAST_UP(PTR_PASS(data)), link_apply, link_del, operator_link_get_graph);
 }
 
+const struct operator_s* operator_link_create_F(const struct operator_s* op, unsigned int o, unsigned int i)
+{
+	auto ret = operator_link_create(op, o, i);
+	operator_free(op);
+	return ret;
+}
+
 
 
 struct permute_data_s {
@@ -1732,6 +1854,24 @@ const struct operator_s* operator_permute(const struct operator_s* op, int N, co
 	data->perm = nperm;
 
 	return operator_generic_create2(N, io_flags, D, dims, strs, CAST_UP(PTR_PASS(data)), permute_fun, permute_del, operator_permute_get_graph);
+}
+
+const struct operator_s* operator_sort_args_F(const struct operator_s* op)
+{
+	int II = operator_nr_in_args(op);
+	int OO = operator_nr_out_args(op);
+
+	int perm[II + OO];
+
+	for(int j = 0, o = 0, i = OO; j < OO + II; j++)
+		if (operator_get_io_flags(op)[j])
+			perm[o++] = j;
+		else
+			perm[i++] = j;
+
+	auto ret = operator_permute(op, OO + II, perm);
+	operator_free(op);
+	return ret;;
 }
 
 
@@ -2441,11 +2581,6 @@ list_t operator_get_list(const struct operator_s* op) {
 	if (NULL != data_reshape) {
 
 		return operator_get_list(data_reshape->x);
-	}
-
-	if (NULL != data_perm) {
-
-		return operator_get_list(data_perm->op);
 	}
 
 	if (NULL != data_perm) {

@@ -31,7 +31,7 @@
 
 enum { kb_size_max = 1000 };
 int kb_size = -1;
-float bessel_kb_beta = -1.; // = bessel_i0(beta);
+double bessel_kb_beta = -1.; // = bessel_i0(beta);
 
 static float kb_table[kb_size_max + 1];
 static double kb_beta = -1.;
@@ -81,12 +81,12 @@ static double ftkb(double beta, double x)
 	double a = pow(beta, 2.) - pow(M_PI * x, 2.);
 
 	if (0. == a)
-		return 1. / bessel_i0(beta);
+		return 1. / bessel_kb_beta;
 
 	if (a > 0)
-		return (sinh(sqrt(a)) / sqrt(a)) / bessel_i0(beta);
+		return (sinh(sqrt(a)) / sqrt(a)) / bessel_kb_beta;
 	else
-		return (sin(sqrt(-a)) / sqrt(-a)) / bessel_i0(beta);
+		return (sin(sqrt(-a)) / sqrt(-a)) / bessel_kb_beta;
 }
 
 
@@ -129,19 +129,19 @@ static float intlookup(int n, const float table[n + 1], float x)
 
 
 
-void gridH(const struct grid_conf_s* conf, const complex float* traj, const long ksp_dims[4], complex float* dst, const long grid_dims[4], const complex float* grid)
+void gridH(const struct grid_conf_s* conf, const long ksp_dims[4], const long trj_strs[4], const complex float* traj, const long ksp_strs[4], complex float* dst, const long grid_dims[4], const long grid_strs[4], const complex float* grid)
 {
 	if (grid_dims[3] != ksp_dims[3])
 		error("Adjoint gridding: ksp and grid are incompatible in dim 3 (%d != %d)!\n", ksp_dims[3], grid_dims[3]);
+	
+	assert(3 == ksp_dims[0]);
+	assert(0 == ksp_strs[0]);
+	assert(CFL_SIZE == trj_strs[0]);
+	assert(0 == trj_strs[3]);
 
 #ifdef USE_CUDA
-	if (cuda_ondevice(traj)) {
-
-		long trj_dims[4] = { 3, ksp_dims[1], ksp_dims[2], 1 };
-		cuda_gridH(conf, 4, trj_dims, traj, ksp_dims, dst, grid_dims, grid);
-		
-		return;
-	}
+	if (cuda_ondevice(traj))
+		return cuda_gridH(conf, ksp_dims, trj_strs, traj, ksp_strs, dst, grid_dims, grid_strs, grid);
 #endif
 
 	long C = ksp_dims[3];
@@ -149,46 +149,48 @@ void gridH(const struct grid_conf_s* conf, const complex float* traj, const long
 	// precompute kaiser bessel table
 	kb_init(conf->beta);
 
-	assert(1 == ksp_dims[0]);
-	long samples = ksp_dims[1] * ksp_dims[2];
+#pragma omp parallel for collapse(2)
+	for (int ir = 0; ir < ksp_dims[1]; ir++) {
+		for (int ip = 0; ip < ksp_dims[2]; ip++) {
 
-#pragma omp parallel for
-	for(int i = 0; i < samples; i++) {
+			long it = (ir * trj_strs[1] + ip * trj_strs[2]) / CFL_SIZE;
+			long ik = (ir * ksp_strs[1] + ip * ksp_strs[2]) / CFL_SIZE;
 
-		float pos[3];
-		pos[0] = conf->os * (creal(traj[i * 3 + 0]) + conf->shift[0]);
-		pos[1] = conf->os * (creal(traj[i * 3 + 1]) + conf->shift[1]);
-		pos[2] = conf->os * (creal(traj[i * 3 + 2]) + conf->shift[2]);
+			float pos[3];
+			pos[0] = conf->os * (creal(traj[it + 0]) + conf->shift[0]);
+			pos[1] = conf->os * (creal(traj[it + 1]) + conf->shift[1]);
+			pos[2] = conf->os * (creal(traj[it + 2]) + conf->shift[2]);
 
-		pos[0] += (grid_dims[0] > 1) ? ((float)grid_dims[0] / 2.) : 0.;
-		pos[1] += (grid_dims[1] > 1) ? ((float)grid_dims[1] / 2.) : 0.;
-		pos[2] += (grid_dims[2] > 1) ? ((float)grid_dims[2] / 2.) : 0.;
+			pos[0] += (grid_dims[0] > 1) ? ((float) grid_dims[0] / 2.) : 0.;
+			pos[1] += (grid_dims[1] > 1) ? ((float) grid_dims[1] / 2.) : 0.;
+			pos[2] += (grid_dims[2] > 1) ? ((float) grid_dims[2] / 2.) : 0.;
 
-		complex float val[C];
-		for (int j = 0; j < C; j++)
-			val[j] = 0.0;
+			complex float val[C];
+			for (int j = 0; j < C; j++)
+				val[j] = 0.0;
 		
-		grid_pointH(C, 3, grid_dims, pos, val, grid, conf->periodic, conf->width, kb_size, kb_table);
+			grid_pointH(C, 3, grid_dims, grid_strs, pos, val, grid, conf->periodic, conf->width, kb_size, kb_table);
 
-		for (int j = 0; j < C; j++)
-			dst[j * samples + i] += val[j];
+			for (int j = 0; j < ksp_dims[3]; j++)
+				dst[j * ksp_strs[3] / CFL_SIZE + ik] += val[j];
+		}
 	}
 }
 
 
-void grid(const struct grid_conf_s* conf, const complex float* traj, const long grid_dims[4], complex float* grid, const long ksp_dims[4], const complex float* src)
+void grid(const struct grid_conf_s* conf, const long ksp_dims[4], const long trj_strs[4], const complex float* traj, const long grid_dims[4], const long grid_strs[4], complex float* grid, const long ksp_strs[4], const complex float* src)
 {
 	if (grid_dims[3] != ksp_dims[3])
 		error("Gridding: ksp and grid are incompatible in dim 3 (%d != %d)!\n", ksp_dims[3], grid_dims[3]);
 
-#ifdef USE_CUDA
-	if (cuda_ondevice(traj)) {
+	assert(3 == ksp_dims[0]);
+	assert(0 == ksp_strs[0]);
+	assert(CFL_SIZE == trj_strs[0]);
+	assert(0 == trj_strs[3]);
 
-		long trj_dims[4] = { 3, ksp_dims[1], ksp_dims[2], 1 };
-		cuda_grid(conf, 4, trj_dims, traj, grid_dims, grid, ksp_dims, src);
-		
-		return;
-	}
+#ifdef USE_CUDA
+	if (cuda_ondevice(traj))
+		return cuda_grid(conf, ksp_dims, trj_strs, traj, grid_dims, grid_strs, grid, ksp_strs, src);
 #endif
 
 	long C = ksp_dims[3];
@@ -196,34 +198,36 @@ void grid(const struct grid_conf_s* conf, const complex float* traj, const long 
 	// precompute kaiser bessel table
 	kb_init(conf->beta);
 
-	assert(1 == ksp_dims[0]);
-	long samples = ksp_dims[1] * ksp_dims[2];
-
 	// grid
-#pragma omp parallel for
-	for (int i = 0; i < samples; i++) {
+#pragma omp parallel for collapse(2)
+	for (int ir = 0; ir < ksp_dims[1]; ir++) {
+		for (int ip = 0; ip < ksp_dims[2]; ip++) {
 
-		float pos[3];
-		pos[0] = conf->os * (creal(traj[i * 3 + 0]) + conf->shift[0]);
-		pos[1] = conf->os * (creal(traj[i * 3 + 1]) + conf->shift[1]);
-		pos[2] = conf->os * (creal(traj[i * 3 + 2]) + conf->shift[2]);
+			long it = (ir * trj_strs[1] + ip * trj_strs[2]) / CFL_SIZE;
+			long ik = (ir * ksp_strs[1] + ip * ksp_strs[2]) / CFL_SIZE;
 
-		pos[0] += (grid_dims[0] > 1) ? ((float) grid_dims[0] / 2.) : 0.;
-		pos[1] += (grid_dims[1] > 1) ? ((float) grid_dims[1] / 2.) : 0.;
-		pos[2] += (grid_dims[2] > 1) ? ((float) grid_dims[2] / 2.) : 0.;
+			float pos[3];
+			pos[0] = conf->os * (creal(traj[it + 0]) + conf->shift[0]);
+			pos[1] = conf->os * (creal(traj[it + 1]) + conf->shift[1]);
+			pos[2] = conf->os * (creal(traj[it + 2]) + conf->shift[2]);
 
-		complex float val[C];
+			pos[0] += (grid_dims[0] > 1) ? ((float) grid_dims[0] / 2.) : 0.;
+			pos[1] += (grid_dims[1] > 1) ? ((float) grid_dims[1] / 2.) : 0.;
+			pos[2] += (grid_dims[2] > 1) ? ((float) grid_dims[2] / 2.) : 0.;
+
+			complex float val[C];
 		
-		bool skip = true;
+			bool skip = true;
 
-		for (int j = 0; j < C; j++) {
+			for (int j = 0; j < C; j++) {
 
-			val[j] = src[j * samples + i];
-			skip = skip && (0. == val[j]);
-		}
+				val[j] = src[j * ksp_strs[3] / CFL_SIZE + ik];
+				skip = skip && (0. == val[j]);
+			}
 			
-		if (!skip)
-			grid_point(C, 3, grid_dims, pos, grid, val, conf->periodic, conf->width, kb_size, kb_table);			
+			if (!skip)
+				grid_point(C, 3, grid_dims, grid_strs, pos, grid, val, conf->periodic, conf->width, kb_size, kb_table);			
+		}
 	}
 }
 
@@ -254,16 +258,56 @@ void grid2(const struct grid_conf_s* conf, unsigned int D, const long trj_dims[D
 	long grid_strs[D];
 	md_calc_strides(D, grid_strs, grid_dims, CFL_SIZE);
 
+	long max_dims[D];
+	md_max_dims(D, ~0, max_dims, ksp_dims, trj_dims);
+	md_max_dims(D - 4, ~0, max_dims + 4, max_dims + 4, grid_dims + 4);
+
+	if ((trj_strs[2] == trj_strs[1] * max_dims[1]) && (ksp_strs[2] == ksp_strs[1] * max_dims[1])) {
+
+		max_dims[1] *= max_dims[2];
+		max_dims[2] = 1;
+	}
+
+	for (int i = 4; i < (int)D; i++) {
+
+		if (0 != grid_strs[i])
+			continue;
+		
+		if ((trj_strs[i] == trj_strs[1] * max_dims[1]) && (ksp_strs[i] == ksp_strs[1] * max_dims[1])) {
+
+			max_dims[1] *= max_dims[i];
+			max_dims[i] = 1;
+		}
+
+		if (1 == max_dims[2]) {
+
+			max_dims[2] = max_dims[i];
+			trj_strs[2] = trj_strs[i];
+			ksp_strs[2] = ksp_strs[i];
+			max_dims[i] = 1;
+		}
+
+		if ((trj_strs[i] == trj_strs[2] * max_dims[2]) && (ksp_strs[i] == ksp_strs[2] * max_dims[2])) {
+
+			max_dims[2] *= max_dims[i];
+			max_dims[i] = 1;
+		}
+	}
+
 	const long* ptr_grid_dims = &(grid_dims[0]);
-	const long* ptr_ksp_dims = &(ksp_dims[0]);
+	const long* ptr_ksp_dims = &(max_dims[0]);
+
+	const long* ptr_ksp_strs = &(ksp_strs[0]);
+	const long* ptr_trj_strs = &(trj_strs[0]);
+	const long* ptr_grid_strs = &(grid_strs[0]);
 
 	NESTED(void, nary_grid, (void* ptr[]))
 	{
 		const complex float* _trj = ptr[0];
-		complex float* _dst = ptr[1];
-		const complex float* _src = ptr[2];
+		complex float* _grid = ptr[1];
+		const complex float* _ksp = ptr[2];
 
-		grid(conf, _trj, ptr_grid_dims, _dst, ptr_ksp_dims, _src);
+		grid(conf, ptr_ksp_dims, ptr_trj_strs, _trj, ptr_grid_dims, ptr_grid_strs, _grid, ptr_ksp_strs, _ksp);
 	};
 
 	const long* strs[3] = { trj_strs + 4, grid_strs + 4, ksp_strs + 4 };
@@ -275,7 +319,7 @@ void grid2(const struct grid_conf_s* conf, unsigned int D, const long trj_dims[D
 		pflags = 0;
 #endif
 
-	md_parallel_nary(3, D - 4, ksp_dims + 4, pflags, strs, ptr, nary_grid);
+	md_parallel_nary(3, D - 4, max_dims + 4, pflags, strs, ptr, nary_grid);
 }
 
 
@@ -292,16 +336,69 @@ void grid2H(const struct grid_conf_s* conf, unsigned int D, const long trj_dims[
 	long grid_strs[D];
 	md_calc_strides(D, grid_strs, grid_dims, CFL_SIZE);
 
-	long pos[D];
-	for (unsigned int i = 0; i < D; i++)
-		pos[i] = 0;
+	long max_dims[D];
+	md_max_dims(D, ~0, max_dims, ksp_dims, trj_dims);
+	md_max_dims(D - 4, ~0, max_dims + 4, max_dims + 4, grid_dims + 4);
 
-	do {
-		gridH(conf, &MD_ACCESS(D, trj_strs, pos, traj),
-			ksp_dims, &MD_ACCESS(D, ksp_strs, pos, dst),
-			grid_dims, &MD_ACCESS(D, grid_strs, pos, src));
+	if ((trj_strs[2] == trj_strs[1] * max_dims[1]) && (ksp_strs[2] == ksp_strs[1] * max_dims[1])) {
 
-	} while(md_next(D, ksp_dims, (~0 ^ 15), pos));
+		max_dims[1] *= max_dims[2];
+		max_dims[2] = 1;
+	}
+
+	for (int i = 4; i < (int)D; i++) {
+
+		if (0 != grid_strs[i])
+			continue;
+		
+		if ((trj_strs[i] == trj_strs[1] * max_dims[1]) && (ksp_strs[i] == ksp_strs[1] * max_dims[1])) {
+
+			max_dims[1] *= max_dims[i];
+			max_dims[i] = 1;
+		}
+
+		if (1 == max_dims[2]) {
+
+			max_dims[2] = max_dims[i];
+			trj_strs[2] = trj_strs[i];
+			ksp_strs[2] = ksp_strs[i];
+			max_dims[i] = 1;
+		}
+
+		if ((trj_strs[i] == trj_strs[2] * max_dims[2]) && (ksp_strs[i] == ksp_strs[2] * max_dims[2])) {
+
+			max_dims[2] *= max_dims[i];
+			max_dims[i] = 1;
+		}
+	}
+
+	const long* ptr_grid_dims = &(grid_dims[0]);
+	const long* ptr_ksp_dims = &(max_dims[0]);
+
+	const long* ptr_ksp_strs = &(ksp_strs[0]);
+	const long* ptr_trj_strs = &(trj_strs[0]);
+	const long* ptr_grid_strs = &(grid_strs[0]);
+
+
+	NESTED(void, nary_gridH, (void* ptr[]))
+	{
+		const complex float* _trj = ptr[0];
+		const complex float* _grid = ptr[1];
+		complex float* _ksp = ptr[2];
+
+		gridH(conf, ptr_ksp_dims, ptr_trj_strs, _trj, ptr_ksp_strs, _ksp, ptr_grid_dims, ptr_grid_strs, _grid);
+	};
+
+	const long* strs[3] = { trj_strs + 4, grid_strs + 4, ksp_strs + 4 };
+	void* ptr[3] = { (void*)traj, (void*)src, (void*)dst };
+	unsigned long pflags = md_nontriv_dims(D - 4, grid_dims + 4);
+
+#ifdef USE_CUDA
+	if (cuda_ondevice(traj))
+		pflags = 0;
+#endif
+
+	md_parallel_nary(3, D - 4, max_dims + 4, pflags, strs, ptr, nary_gridH);
 }
 
 
@@ -315,7 +412,7 @@ typedef void CLOSURE_TYPE(grid_update_t)(long ind, float d);
 #define VLA(x)
 #endif
 
-static void grid_point_gen(int N, const long dims[VLA(N)], const float pos[VLA(N)], bool periodic, float width, int kb_size, const float kb_table[VLA(kb_size + 1)], grid_update_t update)
+static void grid_point_gen(int N, const long dims[VLA(N)], const long strs[VLA(N)], const float pos[VLA(N)], bool periodic, float width, int kb_size, const float kb_table[VLA(kb_size + 1)], grid_update_t update)
 {
 #ifndef __clang__
 	int sti[N];
@@ -369,7 +466,7 @@ static void grid_point_gen(int N, const long dims[VLA(N)], const float pos[VLA(N
 
 				float frac = fabs(((float)w - pos[N]));
 				float d2 = d * intlookup(kb_size, kb_table, frac / width);
-				long ind2 = (ind * dims[N] + ((w + off[N]) % dims[N]));
+				long ind2 = ind + ((w + off[N]) % dims[N]) * strs[N] / CFL_SIZE;
 
 				grid_point_r(N, ind2, d2);
 			}
@@ -381,7 +478,7 @@ static void grid_point_gen(int N, const long dims[VLA(N)], const float pos[VLA(N
 
 
 
-void grid_point(unsigned int ch, int N, const long dims[VLA(N)], const float pos[VLA(N)], complex float* dst, const complex float val[VLA(ch)], bool periodic, float width, int kb_size, const float kb_table[kb_size + 1])
+void grid_point(unsigned int ch, int N, const long dims[VLA(N)], const long strs[VLA(N)], const float pos[VLA(N)], complex float* dst, const complex float val[VLA(ch)], bool periodic, float width, int kb_size, const float kb_table[kb_size + 1])
 {
 	NESTED(void, update, (long ind, float d))
 	{
@@ -389,29 +486,29 @@ void grid_point(unsigned int ch, int N, const long dims[VLA(N)], const float pos
 
 			// we are allowed to update real and imaginary part independently which works atomically
 			#pragma omp atomic
-			__real(dst[ind + c * dims[0] * dims[1] * dims[2]]) += __real(val[c]) * d;
+			__real(dst[ind + c * strs[3] / CFL_SIZE]) += __real(val[c]) * d;
 			#pragma omp atomic
-			__imag(dst[ind + c * dims[0] * dims[1] * dims[2]]) += __imag(val[c]) * d;
+			__imag(dst[ind + c * strs[3] / CFL_SIZE]) += __imag(val[c]) * d;
 		}
 	};
 
-	grid_point_gen(N, dims, pos, periodic, width, kb_size, kb_table, update);
+	grid_point_gen(N, dims, strs, pos, periodic, width, kb_size, kb_table, update);
 }
 
 
 
-void grid_pointH(unsigned int ch, int N, const long dims[VLA(N)], const float pos[VLA(N)], complex float val[VLA(ch)], const complex float* src, bool periodic, float width, int kb_size, const float kb_table[kb_size + 1])
+void grid_pointH(unsigned int ch, int N, const long dims[VLA(N)], const long strs[VLA(N)], const float pos[VLA(N)], complex float val[VLA(ch)], const complex float* src, bool periodic, float width, int kb_size, const float kb_table[kb_size + 1])
 {
 	NESTED(void, update, (long ind, float d))
 	{
 		for (unsigned int c = 0; c < ch; c++) {
 
-			__real(val[c]) += __real(src[ind + c * dims[0] * dims[1] * dims[2]]) * d;
-			__imag(val[c]) += __imag(src[ind + c * dims[0] * dims[1] * dims[2]]) * d;
+			__real(val[c]) += __real(src[ind + c * strs[3] / CFL_SIZE]) * d;
+			__imag(val[c]) += __imag(src[ind + c * strs[3] / CFL_SIZE]) * d;
 		}
 	};
 
-	grid_point_gen(N, dims, pos, periodic, width, kb_size, kb_table, update);
+	grid_point_gen(N, dims, strs, pos, periodic, width, kb_size, kb_table, update);
 }
 
 
@@ -452,43 +549,70 @@ void rolloff_correction(float os, float width, float beta, const long dimensions
 	}
 }
 
-void apply_rolloff_correction(float os, float width, float beta, int N, const long dims[N], complex float* dst, const complex float* src)
+void apply_rolloff_correction2(float os, float width, float beta, int N, const long dims[N], const long ostrs[N], complex float* dst, const long istrs[N], const complex float* src)
 {
 	// precompute kaiser bessel table
 	kb_init(beta);
 	
+	long size_bat = 1;
+	long obstr = -1;	// batch stride, we support three dims with strides and one batch dim
+	long ibstr = -1;	// batch stride, we support three dims with strides and one batch dim
+
+	for (int i = 3; i < N; i++) {
+
+		if (1 == dims[i])
+			continue;
+
+		assert((-1 == obstr) || ( (ostrs[i] == obstr * size_bat) && (istrs[i] == ibstr * size_bat)));
+
+		if (-1 == obstr) {
+			
+			obstr = ostrs[i];
+			ibstr = istrs[i];
+		}
+		
+		size_bat *= dims[i];
+	}
+
+	obstr /= CFL_SIZE;
+	ibstr /= CFL_SIZE;
+
 #ifdef USE_CUDA
+
 	assert(cuda_ondevice(dst) == cuda_ondevice(src));
 
 	if (cuda_ondevice(dst)) {
 
-		cuda_apply_rolloff_correction(os, width, beta, N, dims, dst, src);
+		long dims_cuda[4] = { dims[0], dims[1], dims[2], md_calc_size(N - 3, dims + 3) };
+		long ostrs_cuda[4] = { ostrs[0] / CFL_SIZE, ostrs[1] / CFL_SIZE, ostrs[2] / CFL_SIZE, obstr };
+		long istrs_cuda[4] = { istrs[0] / CFL_SIZE, istrs[1] / CFL_SIZE, istrs[2] / CFL_SIZE, ibstr };
+
+		cuda_apply_rolloff_correction2(os, width, beta, N, dims_cuda, ostrs_cuda, dst, istrs_cuda, src);
 
 		if (use_compat_to_version("v0.8.00")) {
 
 			float scale = powf(ftkb(beta, 0) * width / 2, bitcount(md_nontriv_dims(3, dims)));
-			md_zsmul(N, dims, dst, dst, scale);
+			md_zsmul2(N, dims, ostrs, dst, ostrs, dst, scale);
 		}
 
 		return;
 	}
 #endif
-	long size_img = md_calc_size(3, dims);
-	long size_bat = md_calc_size(N - 3, dims + 3);
 
 	#pragma omp parallel for collapse(3)
 	for (int z = 0; z < dims[2]; z++) {
 		for (int y = 0; y < dims[1]; y++) {
 			for (int x = 0; x < dims[0]; x++) {
 
-				long idx = x + dims[0] * (y + z * dims[1]);
+				long oidx = (x * ostrs[0] + y * ostrs[1] + z * ostrs[2]) / CFL_SIZE;
+				long iidx = (x * istrs[0] + y * istrs[1] + z * istrs[2]) / CFL_SIZE;
 
 				float val = (dims[0] > 1 ? rolloff(pos(dims[0], x) / os, beta, width) : 1)
 					  * (dims[1] > 1 ? rolloff(pos(dims[1], y) / os, beta, width) : 1)
 					  * (dims[2] > 1 ? rolloff(pos(dims[2], z) / os, beta, width) : 1);
 
 				for (long i = 0; i < size_bat; i++)
-					dst[idx + i *size_img] = val * src[idx + i *size_img];
+					dst[oidx + i * obstr] = val * src[iidx + i * ibstr];
 			}
 		}
 	}
@@ -496,10 +620,14 @@ void apply_rolloff_correction(float os, float width, float beta, int N, const lo
 	if (use_compat_to_version("v0.8.00")) {
 
 		float scale = powf(ftkb(beta, 0) * width / 2, bitcount(md_nontriv_dims(3, dims)));
-		md_zsmul(N, dims, dst, dst, scale);
+		md_zsmul2(N, dims, ostrs, dst, ostrs, dst, scale);
 	}
 }
 
+void apply_rolloff_correction(float os, float width, float beta, int N, const long dims[N], complex float* dst, const complex float* src)
+{
+	apply_rolloff_correction2(os, width, beta, N, dims, MD_STRIDES(N, dims, CFL_SIZE), dst, MD_STRIDES(N, dims, CFL_SIZE), src);
+}
 
 
 

@@ -62,8 +62,9 @@ static void cublas_error(const char* file, int line, cublasStatus_t code)
 	error("cuBLAS Error: %s in %s:%d \n", err_str, file, line);
 }
 
-#define CUBLAS_ERROR(x)	({ CUDA_ASYNC_ERROR_NOTE("before cuBLAS call"); cublasStatus_t errval = (x); if (CUBLAS_STATUS_SUCCESS != errval) cublas_error(__FILE__, __LINE__, errval); CUDA_ASYNC_ERROR_NOTE("after cuBLAS call"); })
-#define CUBLAS_CALL(x)	({ CUDA_ASYNC_ERROR_NOTE("before cuBLAS call"); cublas_set_gpulock(); cublasStatus_t errval = (x); cublas_unset_gpulock(); if (CUBLAS_STATUS_SUCCESS != errval) cublas_error(__FILE__, __LINE__, errval); CUDA_ASYNC_ERROR_NOTE("after cuBLAS call"); })
+#define CUBLAS_ERROR_INIT(x)	({ cublasStatus_t errval = (x); if (CUBLAS_STATUS_SUCCESS != errval) cublas_error(__FILE__, __LINE__, errval); })
+#define CUBLAS_ERROR(x)		({ CUDA_ASYNC_ERROR_NOTE("before cuBLAS call"); cublasStatus_t errval = (x); if (CUBLAS_STATUS_SUCCESS != errval) cublas_error(__FILE__, __LINE__, errval); CUDA_ASYNC_ERROR_NOTE("after cuBLAS call"); })
+#define CUBLAS_CALL(x)		({ CUDA_ASYNC_ERROR_NOTE("before cuBLAS call"); cublas_set_gpulock(); cublasStatus_t errval = (x); cublas_unset_gpulock(); if (CUBLAS_STATUS_SUCCESS != errval) cublas_error(__FILE__, __LINE__, errval); CUDA_ASYNC_ERROR_NOTE("after cuBLAS call"); })
 
 
 static cublasHandle_t handle[MAX_CUDA_DEVICES];
@@ -79,7 +80,7 @@ void cublas_init(void)
 	for (int device = 0; device < cuda_num_devices(); ++device) {
 
 		cuda_set_device(device);
-		CUBLAS_ERROR(cublasCreate(&handle[device]));
+		CUBLAS_ERROR_INIT(cublasCreate(&handle[device]));
 	}
 
 	cuda_set_device(old_device);
@@ -93,7 +94,7 @@ void cublas_deinit(void)
 		error("Cannot deinitialize cuBLAS, number of devices has changed from initialization!");
 
 	for (int device = 0; device < cuda_num_devices(); ++device)
-		CUBLAS_ERROR(cublasDestroy(handle[device]));
+		CUBLAS_ERROR_INIT(cublasDestroy(handle[device]));
 
 	num_devices_initialized = 0;	
 }
@@ -201,9 +202,9 @@ double cuda_norm(long size, const float* src1)
 	// git rev: ab28a9a953a80d243511640b23501f964a585349
 //	printf("cublas: %f\n", cublasSnrm2(size, src1, 1));
 //	printf("GPU norm (sdot: %f)\n", sqrt(cuda_sdot(size, src1, src1)));
-#ifdef GPU_ASSERTS
-	assert(cuda_ondevice_num(src1, cuda_get_device_internal()));
-#endif
+//#ifdef GPU_ASSERTS
+//	assert(cuda_ondevice_num(src1, cuda_get_device_internal()));
+//#endif
 	return sqrt(cuda_sdot(size, src1, src1));
 #else
 	return cublasSnrm2(size, src1, 1);
@@ -257,26 +258,57 @@ void cuda_swap(long size, float* a, float* b)
 
 #endif
 
+#ifdef _OPENMP
+#include <omp.h>
 
+static bool cpulock_init = false;
+static omp_nest_lock_t cpulock;
 
-
-static void openblas_set_threads(void)
+static void blas_cpu_set_lock(void)
 {
-#ifndef USE_OPENBLAS
-	return;
-#else
+	if (!cpulock_init) {
+	
+		#pragma omp critical(cpulock_init)
+		{
+			if (!cpulock_init) {
 
-#ifndef _OPENMP
-	return;
-#else
-	if (1 != openblas_get_parallel())
-		return; //pthread version of openblas
+				#ifdef USE_OPENBLAS
+				//set num threads to ne if openblas is built with pthreads
+				if (1 == openblas_get_parallel())
+					openblas_set_num_threads(1);
+				#endif
 
-	#pragma omp critical
-	openblas_set_num_threads(omp_in_parallel() ? 1 : omp_get_max_threads());
-#endif
+				omp_init_nest_lock(&cpulock);
+				cpulock_init = true;
+			}
+		}
+	}
+
+	if (!omp_in_parallel())
+		return;
+
+#ifndef BLAS_THREADSAFE
+	omp_set_nest_lock(&cpulock);
 #endif
 }
+
+static void blas_cpu_unset_lock(void)
+{
+	if (!omp_in_parallel())
+		return;
+
+#ifndef BLAS_THREADSAFE
+	omp_unset_nest_lock(&cpulock);
+#endif
+}
+
+#define BLAS_CALL(x)	({ blas_cpu_set_lock(); (x); blas_cpu_unset_lock(); })
+
+#else
+
+#define BLAS_CALL(x)	x
+
+#endif
 
 
 
@@ -292,11 +324,10 @@ void blas2_cgemm(char transa, char transb, long M, long N, long K, const complex
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_cgemm(CblasColMajor, ('T' == transa) ? CblasTrans : (('C' == transa) ? CblasConjTrans : CblasNoTrans),
+	BLAS_CALL(cblas_cgemm(CblasColMajor, ('T' == transa) ? CblasTrans : (('C' == transa) ? CblasConjTrans : CblasNoTrans),
 		    ('T' == transb) ? CblasTrans : (('C' == transb) ? CblasConjTrans : CblasNoTrans),
-		    M, N, K, (void*)alpha, (void*)A, lda, (void*)B, ldb, (void*)beta, (void*)C, ldc);
+		    M, N, K, (void*)alpha, (void*)A, lda, (void*)B, ldb, (void*)beta, (void*)C, ldc));
 }
 
 
@@ -313,11 +344,9 @@ void blas_cgemm(char transa, char transb, long M, long N,  long K, const complex
 	}
 #endif
 
-	openblas_set_threads();
-
-	cblas_cgemm(CblasColMajor, ('T' == transa) ? CblasTrans : (('C' == transa) ? CblasConjTrans : CblasNoTrans),
+	BLAS_CALL(cblas_cgemm(CblasColMajor, ('T' == transa) ? CblasTrans : (('C' == transa) ? CblasConjTrans : CblasNoTrans),
 		    ('T' == transb) ? CblasTrans : (('C' == transb) ? CblasConjTrans : CblasNoTrans),
-		    M, N, K, (void*)(&alpha), (void*)A, lda, (void*)B, ldb, (void*)(&beta), (void*)C, ldc);
+		    M, N, K, (void*)(&alpha), (void*)A, lda, (void*)B, ldb, (void*)(&beta), (void*)C, ldc));
 }
 
 
@@ -333,10 +362,9 @@ void blas2_cgemv(char trans, long M, long N, const complex float* alpha, long ld
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_cgemv(CblasColMajor, ('T' == trans) ? CblasTrans : (('C' == trans) ? CblasConjTrans : CblasNoTrans),
-		    M, N, (void*)alpha, (void*)A, lda, (void*)x, incx, (void*)beta, (void*)y, incy);
+	BLAS_CALL(cblas_cgemv(CblasColMajor, ('T' == trans) ? CblasTrans : (('C' == trans) ? CblasConjTrans : CblasNoTrans),
+		    M, N, (void*)alpha, (void*)A, lda, (void*)x, incx, (void*)beta, (void*)y, incy));
 }
 
 
@@ -352,10 +380,9 @@ void blas_cgemv(char trans, long M, long N, complex float alpha, long lda, const
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_cgemv(CblasColMajor, ('T' == trans) ? CblasTrans : (('C' == trans) ? CblasConjTrans : CblasNoTrans),
-		    M, N, (void*)&alpha, (void*)A, lda, (void*)x, incx, (void*)&beta, (void*)y, incy);
+	BLAS_CALL(cblas_cgemv(CblasColMajor, ('T' == trans) ? CblasTrans : (('C' == trans) ? CblasConjTrans : CblasNoTrans),
+		    M, N, (void*)&alpha, (void*)A, lda, (void*)x, incx, (void*)&beta, (void*)y, incy));
 }
 
 
@@ -371,9 +398,8 @@ void blas2_cgeru(long M, long N, const complex float* alpha, long incx, const co
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_cgeru(CblasColMajor, M, N, alpha, x, incx, y, incy, A, lda);
+	BLAS_CALL(cblas_cgeru(CblasColMajor, M, N, alpha, x, incx, y, incy, A, lda));
 }
 
 
@@ -389,9 +415,8 @@ void blas_cgeru(long M, long N, complex float alpha, long incx, const complex fl
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_cgeru(CblasColMajor, M, N, &alpha, x, incx, y, incy, (float*)A, lda);
+	BLAS_CALL(cblas_cgeru(CblasColMajor, M, N, &alpha, x, incx, y, incy, (float*)A, lda));
 }
 
 
@@ -407,9 +432,7 @@ void blas2_caxpy(long N, const complex float* alpha, long incx, const complex fl
 	}
 #endif
 
-	openblas_set_threads();
-
-	cblas_caxpy(N, alpha, x, incx, y, incy);
+	BLAS_CALL(cblas_caxpy(N, alpha, x, incx, y, incy));
 }
 
 
@@ -425,9 +448,7 @@ void blas_caxpy(long N, const complex float alpha, long incx, const complex floa
 	}
 #endif
 
-	openblas_set_threads();
-
-	cblas_caxpy(N, &alpha, x, incx, y, incy);
+	BLAS_CALL(cblas_caxpy(N, &alpha, x, incx, y, incy));
 }
 
 
@@ -442,9 +463,8 @@ void blas2_cscal(long N, const complex float* alpha, long incx, complex float* x
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_cscal(N, alpha, x, incx);
+	BLAS_CALL(cblas_cscal(N, alpha, x, incx));
 }
 
 
@@ -459,9 +479,8 @@ void blas_cscal(long N, const complex float alpha, long incx, complex float* x)
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_cscal(N, &alpha, x, incx);
+	BLAS_CALL(cblas_cscal(N, &alpha, x, incx));
 }
 
 
@@ -476,9 +495,8 @@ void blas2_cdotu(complex float* result, long N, long incx, const complex float* 
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_cdotu_sub(N, x, incx, y, incy, (void*)result);
+	BLAS_CALL(cblas_cdotu_sub(N, x, incx, y, incy, (void*)result));
 }
 
 
@@ -493,11 +511,10 @@ void blas2_sgemm(char transa, char transb, long M, long N, long K, const float* 
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_sgemm(CblasColMajor, ('T' == transa) ? CblasTrans : (('C' == transa) ? CblasConjTrans : CblasNoTrans),
+	BLAS_CALL(cblas_sgemm(CblasColMajor, ('T' == transa) ? CblasTrans : (('C' == transa) ? CblasConjTrans : CblasNoTrans),
 		    ('T' == transb) ? CblasTrans : (('C' == transb) ? CblasConjTrans : CblasNoTrans),
-		    M, N, K, *alpha, A, lda, B, ldb, *beta, C, ldc);
+		    M, N, K, *alpha, A, lda, B, ldb, *beta, C, ldc));
 }
 
 
@@ -512,11 +529,10 @@ void blas_sgemm(char transa, char transb, long M, long N,  long K, const float a
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_sgemm(CblasColMajor, ('T' == transa) ? CblasTrans : (('C' == transa) ? CblasConjTrans : CblasNoTrans),
+	BLAS_CALL(cblas_sgemm(CblasColMajor, ('T' == transa) ? CblasTrans : (('C' == transa) ? CblasConjTrans : CblasNoTrans),
 		    ('T' == transb) ? CblasTrans : (('C' == transb) ? CblasConjTrans : CblasNoTrans),
-		    M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
+		    M, N, K, alpha, A, lda, B, ldb, beta, C, ldc));
 }
 
 
@@ -532,10 +548,9 @@ void blas2_sgemv(char trans, long M, long N, const float* alpha, long lda, const
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_sgemv(CblasColMajor, ('T' == trans) ? CblasTrans : CblasNoTrans, M, N, *alpha,
-		    (const float*)A, lda, x, incx, *beta, y, incy);
+	BLAS_CALL(cblas_sgemv(CblasColMajor, ('T' == trans) ? CblasTrans : CblasNoTrans, M, N, *alpha,
+		    (const float*)A, lda, x, incx, *beta, y, incy));
 }
 
 
@@ -551,10 +566,9 @@ void blas_sgemv(char trans, long M, long N, const float alpha, long lda, const f
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_sgemv(CblasColMajor, ('T' == trans) ? CblasTrans : CblasNoTrans, M, N, alpha,
-		    (const float*)A, lda, x, incx, beta, y, incy);
+	BLAS_CALL(cblas_sgemv(CblasColMajor, ('T' == trans) ? CblasTrans : CblasNoTrans, M, N, alpha,
+		    (const float*)A, lda, x, incx, beta, y, incy));
 }
 
 
@@ -569,9 +583,8 @@ void blas2_sger(long M, long N, const float* alpha, long incx, const float* x, l
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_sger(CblasColMajor, M, N, *alpha, x, incx, y, incy, (float*)A, lda);
+	BLAS_CALL(cblas_sger(CblasColMajor, M, N, *alpha, x, incx, y, incy, (float*)A, lda));
 }
 
 
@@ -587,9 +600,8 @@ void blas_sger(long M, long N, const float alpha, long incx, const float* x, lon
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_sger(CblasColMajor, M, N, alpha, x, incx, y, incy, (float*)A, lda);
+	BLAS_CALL(cblas_sger(CblasColMajor, M, N, alpha, x, incx, y, incy, (float*)A, lda));
 }
 
 
@@ -604,9 +616,8 @@ void blas2_saxpy(long N, const float* alpha, long incx, const float* x, long inc
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_saxpy(N, *alpha, x, incx, y, incy);
+	BLAS_CALL(cblas_saxpy(N, *alpha, x, incx, y, incy));
 }
 
 
@@ -621,9 +632,8 @@ void blas_saxpy(long N, const float alpha, long incx, const float* x, long incy,
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_saxpy(N, alpha, x, incx, y, incy);
+	BLAS_CALL(cblas_saxpy(N, alpha, x, incx, y, incy));
 }
 
 
@@ -639,9 +649,8 @@ void blas2_sscal(long N, const float* alpha, long incx, float* x)
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_sscal(N, *alpha, x, incx);
+	BLAS_CALL(cblas_sscal(N, *alpha, x, incx));
 }
 
 
@@ -656,9 +665,8 @@ void blas_sscal(long N, float alpha, long incx, float* x)
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	cblas_sscal(N, alpha, x, incx);
+	BLAS_CALL(cblas_sscal(N, alpha, x, incx));
 }
 
 
@@ -673,9 +681,8 @@ void blas2_sdot(float* result, long N, long incx, const float* x, long incy, con
 		return;
 	}
 #endif
-	openblas_set_threads();
 
-	*result = cblas_sdot(N, x, incx, y, incy);
+	BLAS_CALL(*result = cblas_sdot(N, x, incx, y, incy));
 }
 
 

@@ -13,7 +13,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <string.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -608,9 +607,6 @@ int read_multi_cfl_header(int fd, char** file, int D_max, int n_max, int n[D_max
 					pos += delta;
 
 					if (j == n[i]) {
-
-						if (j != n[i])
-							return -1;
 
 						num_ele_dims += size_tensor;
 

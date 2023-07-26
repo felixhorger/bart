@@ -83,45 +83,45 @@ static const struct nlop_s* append_activation_bias_internal(const struct nlop_s*
 
 	switch (activation){
 
-		case ACT_LIN:
+	case ACT_LIN:
 
-			nlop_act = nlop_from_linop_F(linop_identity_create(N, dims));
-			break;
+		nlop_act = nlop_from_linop_F(linop_identity_create(N, dims));
+		break;
 
-		case ACT_RELU:
+	case ACT_RELU:
 
-			nlop_act = nlop_relu_create(N, dims);
-			break;
+		nlop_act = nlop_relu_create(N, dims);
+		break;
 
-		case ACT_SOFTMAX:
+	case ACT_SOFTMAX:
 
-			nlop_act = nlop_softmax_create(N, dims, ~bflags);
-			break;
+		nlop_act = nlop_softmax_create(N, dims, ~bflags);
+		break;
 
-		case ACT_SIGMOID:
+	case ACT_SIGMOID:
 
-			nlop_act = nlop_sigmoid_create(N, dims);
-			break;
+		nlop_act = nlop_sigmoid_create(N, dims);
+		break;
 
-		case ACT_SIGLOG:
+	case ACT_SIGLOG:
 
-			nlop_act = nlop_siglog_create(N, dims, 1, 1);
-			break;
+		nlop_act = nlop_siglog_create(N, dims, 1, 1);
+		break;
 
-		case ACT_IGAUSSIAN:
+	case ACT_IGAUSSIAN:
 
-			nlop_act = nlop_igaussian_create(N, dims, 1);
-			break;
+		nlop_act = nlop_igaussian_create(N, dims, 1);
+		break;
 
-		case ACT_CARDIOID:
+	case ACT_CARDIOID:
 
-			nlop_act = nlop_cardioid_create(N, dims);
-			break;
+		nlop_act = nlop_cardioid_create(N, dims);
+		break;
 
-		default:
+	default:
 
-			nlop_act = NULL;
-			assert(0);
+		nlop_act = NULL;
+		assert(0);
 	}
 
 	if (bias)
@@ -136,12 +136,15 @@ static const struct nlop_s* append_activation_bias_internal(const struct nlop_s*
 
 	long bdims_layer[N];
 	int j = 0;
-	for (int i = 0; i < N; i++)
-		if (MD_IS_SET(bflags, i)){
+
+	for (int i = 0; i < N; i++) {
+
+		if (MD_IS_SET(bflags, i)) {
 
 			bdims_layer[j] = bdims[i];
 			j += 1;
 		}
+	}
 
 	network = nlop_reshape_in_F(network, NI, j, bdims_layer);
 
@@ -164,15 +167,6 @@ static void bias_op_apply(const nlop_data_t* _data, int N, complex float* args[N
 {
 	const struct bias_op_s* d = CAST_DOWN(bias_op_s, _data);
 	assert(3 == N);
-
-#ifdef USE_CUDA
-
-	if (cuda_ondevice(args[0])) {
-
-		md_copy2(d->N, d->dims, MD_STRIDES(d->N, d->dims, CFL_SIZE), args[0], MD_STRIDES(d->N, d->bdims, CFL_SIZE), args[2], CFL_SIZE);
-		md_zadd(d->N, d->dims, args[0], args[1], args[0]);
-	} else
-#endif
 
 	md_zadd2(d->N, d->dims, MD_STRIDES(d->N, d->dims, CFL_SIZE), args[0], MD_STRIDES(d->N, d->dims, CFL_SIZE), args[1], MD_STRIDES(d->N, d->bdims, CFL_SIZE), args[2]);
 }
@@ -301,6 +295,7 @@ static void relu_apply(const nlop_data_t* _data, complex float* _dst, const comp
 		md_greatequal(N, dims, der, src, dst);
 
 	md_free(d->der);
+
 	d->der = md_compress(N, dims, der);
 
 	md_free(der);
@@ -328,7 +323,6 @@ static void relu_apply(const nlop_data_t* _data, complex float* _dst, const comp
 		md_free(tmp2);
 
 		md_free(tder);
-
 	}
 }
 
@@ -361,7 +355,7 @@ static void relu_deradj(const nlop_data_t* _data, unsigned int o, unsigned int i
 
 	if (0 != d->slope_param) {
 
-		md_smul(N, dims, dst, dst, 1. -d->slope_param);
+		md_smul(N, dims, dst, dst, 1. - d->slope_param);
 		md_axpy(N, dims, dst, d->slope_param, src);	
 	}
 
@@ -603,8 +597,9 @@ const struct nlop_s* nlop_cardioid_create(unsigned int N, const long dims[N])
 const struct nlop_s* nlop_siglog_create(unsigned int N, const long dims[N], float c, float r)
 {
 	auto result = nlop_zdiv_reg_create(N, dims, c);
+
 	result = nlop_chain2_FF(nlop_zabs_create(N, dims), 0, result, 0);
-	result = nlop_chain2_FF(nlop_from_linop_F(linop_scale_create(N, dims, 1./ r)), 0, result, 0);
+	result = nlop_chain2_FF(nlop_from_linop_F(linop_scale_create(N, dims, 1. / r)), 0, result, 0);
 
 	return nlop_zrprecomp_jacobian_F(result);
 }
@@ -619,7 +614,7 @@ const struct nlop_s* nlop_igaussian_create(unsigned int N, const long dims[N], f
 	auto result = nlop_tenmul_create(N, dims, dims, dims);
 	result = nlop_chain2_FF(nlop_from_linop_F(linop_zconj_create(N, dims)), 0, result, 0);
 	result = nlop_dup_F(result, 0, 1);
-	result = nlop_chain_FF(result, nlop_from_linop_F(linop_scale_create(N, dims, 1./(2*sigma*sigma))));
+	result = nlop_chain_FF(result, nlop_from_linop_F(linop_scale_create(N, dims, 1. / (2 * sigma * sigma))));
 	result = nlop_chain_FF(result, nlop_zexp_create(N, dims));
 	result = nlop_chain_FF(result, nlop_from_linop_F(linop_scale_create(N, dims, -1.)));
 	result = nlop_chain2_FF(result, 0, nlop_tenmul_create(N, dims, dims, dims), 0);

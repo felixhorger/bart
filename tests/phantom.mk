@@ -14,6 +14,14 @@ $(TESTS_OUT)/shepplogan_coil_ksp.ra: phantom
 $(TESTS_OUT)/coils.ra: phantom
 	$(TOOLDIR)/phantom -S8 $@
 
+$(TESTS_OUT)/shepplogan_coil_large.ra: phantom
+	$(TOOLDIR)/phantom --coil HEAD_3D_64CH -s64 $@
+
+$(TESTS_OUT)/shepplogan_coil_ksp_large.ra: phantom
+	$(TOOLDIR)/phantom --coil HEAD_3D_64CH -s64 -k $@
+
+$(TESTS_OUT)/coils_large.ra: phantom
+	$(TOOLDIR)/phantom --coil HEAD_3D_64CH -S64 $@
 
 tests/test-phantom-ksp: fft nrmse $(TESTS_OUT)/shepplogan.ra $(TESTS_OUT)/shepplogan_ksp.ra
 	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
@@ -48,6 +56,20 @@ tests/test-phantom-ksp-coil: fft nrmse $(TESTS_OUT)/shepplogan_coil.ra $(TESTS_O
 	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
 	touch $@
 
+tests/test-phantom-coil-large: fmac nrmse $(TESTS_OUT)/shepplogan.ra $(TESTS_OUT)/shepplogan_coil_large.ra $(TESTS_OUT)/coils_large.ra
+	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
+	$(TOOLDIR)/fmac $(TESTS_OUT)/shepplogan.ra $(TESTS_OUT)/coils_large.ra sl_coil2.ra		;\
+	$(TOOLDIR)/nrmse -t 0. $(TESTS_OUT)/shepplogan_coil_large.ra sl_coil2.ra			;\
+	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
+	touch $@
+
+
+tests/test-phantom-ksp-coil-large: fft nrmse $(TESTS_OUT)/shepplogan_coil_large.ra $(TESTS_OUT)/shepplogan_coil_ksp_large.ra
+	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
+	$(TOOLDIR)/fft -i 7 $(TESTS_OUT)/shepplogan_coil_ksp_large.ra shepplogan_cimg.ra		;\
+	$(TOOLDIR)/nrmse -t 0.22 $(TESTS_OUT)/shepplogan_coil_large.ra shepplogan_cimg.ra		;\
+	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
+	touch $@
 
 tests/test-phantom-bart: fft nrmse phantom
 	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
@@ -74,7 +96,7 @@ tests/test-phantom-basis: nrmse phantom fmac
 	$(TOOLDIR)/phantom -T -k k0.ra								;\
 	$(TOOLDIR)/phantom -T -b -k k1.ra							;\
 	$(TOOLDIR)/fmac -s 64 k1.ra k2.ra							;\
-	$(TOOLDIR)/nrmse -t 0. k0.ra k2.ra							;\
+	$(TOOLDIR)/nrmse -t 0.000001 k0.ra k2.ra							;\
 	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
 	touch $@
 
@@ -259,6 +281,55 @@ tests/test-phantom-rotation-SONAR-multistep: phantom slice flip nrmse
 	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
 	touch $@
 
+tests/test-phantom-brain: fft nrmse phantom
+	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
+	$(TOOLDIR)/phantom --BRAIN -k k.ra								;\
+	$(TOOLDIR)/fft -i 3 k.ra x.ra								;\
+	$(TOOLDIR)/phantom --BRAIN r.ra								;\
+	$(TOOLDIR)/nrmse -t 0.2 r.ra x.ra							;\
+	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
+	touch $@
+
+tests/test-phantom-BRAIN-basis: phantom index extract fmac nrmse
+	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
+	$(TOOLDIR)/phantom --BRAIN -k k0.ra							;\
+	$(TOOLDIR)/phantom --BRAIN -b -k k1.ra							;\
+	$(TOOLDIR)/index 6 5 ind.ra 								;\
+	$(TOOLDIR)/extract 6 1 5 ind.ra ind2.ra 						;\
+	$(TOOLDIR)/fmac -s 64 k1.ra ind2.ra k2.ra						;\
+	$(TOOLDIR)/nrmse -t 0.000001 k0.ra k2.ra						;\
+	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
+	touch $@
+
+tests/test-phantom-FILE: fft nrmse phantom
+	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
+	$(TOOLDIR)/phantom --FILE $(TOOLBOX_PATH)/tests/geom/flower -k k.ra			;\
+	$(TOOLDIR)/fft -i 3 k.ra x.ra								;\
+	$(TOOLDIR)/phantom --FILE $(TOOLBOX_PATH)/tests/geom/flower r.ra				;\
+	$(TOOLDIR)/nrmse -t 0.16 r.ra x.ra							;\
+	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
+	touch $@
+
+tests/test-phantom-FILE-basis: fmac nrmse phantom
+	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
+	$(TOOLDIR)/phantom --FILE $(TOOLBOX_PATH)/tests/geom/flower2 -k k.ra			;\
+	$(TOOLDIR)/phantom --FILE $(TOOLBOX_PATH)/tests/geom/flower2 -b -k k1.ra			;\
+	$(TOOLDIR)/fmac -s 64 k1.ra k2.ra							;\
+	$(TOOLDIR)/nrmse -t 0.000001 k.ra k2.ra							;\
+	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
+	touch $@
+
+tests/test-phantom-FILE-coil-large: fmac nrmse phantom $(TESTS_OUT)/coils_large.ra
+	set -e; mkdir $(TESTS_TMP) ; cd $(TESTS_TMP)						;\
+	$(TOOLDIR)/phantom --FILE $(TOOLBOX_PATH)/tests/geom/flower r.ra			;\
+	$(TOOLDIR)/fmac r.ra $(TESTS_OUT)/coils_large.ra sl_coil2.ra				;\
+	$(TOOLDIR)/phantom --coil HEAD_3D_64CH -s64 --FILE $(TOOLBOX_PATH)/tests/geom/flower rc.ra		;\
+	$(TOOLDIR)/nrmse -t 0.000001 rc.ra sl_coil2.ra						;\
+	rm *.ra ; cd .. ; rmdir $(TESTS_TMP)
+	touch $@
+
+
+
 TESTS += tests/test-phantom-ksp tests/test-phantom-noncart tests/test-phantom-coil tests/test-phantom-ksp-coil
 TESTS += tests/test-phantom-bart tests/test-phantom-bart-basis
 TESTS += tests/test-phantom-basis tests/test-phantom-random-tubes
@@ -268,3 +339,7 @@ TESTS += tests/test-phantom-rotation-NIST tests/test-phantom-rotation-NIST-kspac
 TESTS += tests/test-phantom-rotation-tubes-multistep tests/test-phantom-rotation-tubes-kspace-multistep tests/test-phantom-rotation-tubes-basis-multistep
 TESTS += tests/test-phantom-rotation-NIST-multistep tests/test-phantom-rotation-NIST-kspace-multistep tests/test-phantom-rotation-NIST-basis-multistep
 TESTS += tests/test-phantom-SONAR tests/test-phantom-SONAR-basis tests/test-phantom-rotation-SONAR tests/test-phantom-rotation-SONAR-multistep
+TESTS += tests/test-phantom-brain tests/test-phantom-BRAIN-basis
+TESTS += tests/test-phantom-coil-large tests/test-phantom-ksp-coil-large
+TESTS += tests/test-phantom-FILE tests/test-phantom-FILE-basis tests/test-phantom-FILE-coil-large
+

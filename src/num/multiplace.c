@@ -7,7 +7,9 @@
 #include "misc/types.h"
 
 #include "num/multind.h"
+#ifdef USE_CUDA
 #include "num/gpuops.h"
+#endif
 
 #include "num/multiplace.h"
 
@@ -23,8 +25,9 @@ struct multiplace_array_s {
 	void* ptr_cpu;
 
 #ifdef USE_CUDA
-	void* ptr_gpu;
+	void* ptr_gpu[MAX_CUDA_DEVICES];
 #endif
+	bool free;
 };
 
 
@@ -42,9 +45,11 @@ static struct multiplace_array_s* multiplace_alloc(int D, const long dimensions[
 	result->dims = *PTR_PASS(dims);
 
 	result->ptr_cpu = NULL;
+	result->free = true;
 
 #ifdef USE_CUDA
-	result->ptr_gpu = NULL;
+	for (int i = 0; i < MAX_CUDA_DEVICES; i++)
+		result->ptr_gpu[i] = NULL;
 #endif
 
 	return PTR_PASS(result);
@@ -57,9 +62,12 @@ void multiplace_free(const struct multiplace_array_s* ptr)
 	if (NULL == ptr)
 		return;
 
-	md_free(ptr->ptr_cpu);
+	if (ptr->free)
+		md_free(ptr->ptr_cpu);
+
 #ifdef USE_CUDA
-	md_free(ptr->ptr_gpu);
+	for (int i = 0; i < MAX_CUDA_DEVICES; i++)
+		md_free(ptr->ptr_gpu[i]);
 #endif
 
 	xfree(ptr->dims);
@@ -75,10 +83,14 @@ const void* multiplace_read(struct multiplace_array_s* ptr, const void* ref)
 #ifdef USE_CUDA
 	if (cuda_ondevice(ref)) {
 
-		if (NULL == ptr->ptr_gpu)
-			ptr->ptr_gpu = md_gpu_move(ptr->N, ptr->dims, ptr->ptr_ref, ptr->size);
+		#pragma omp critical (bart_multiplace)
+		if (NULL == ptr->ptr_gpu[cuda_get_device()]) {
 
-		return ptr->ptr_gpu;
+			ptr->ptr_gpu[cuda_get_device()] = md_gpu_move(ptr->N, ptr->dims, ptr->ptr_ref, ptr->size);
+			cuda_sync_device();
+		}
+
+		return ptr->ptr_gpu[cuda_get_device()];
 	}
 #else
 	UNUSED(ref);
@@ -105,10 +117,9 @@ struct multiplace_array_s* multiplace_move2(int D, const long dimensions[D], con
 	result->ptr_ref = tmp;
 
 #ifdef USE_CUDA
-	if (cuda_ondevice(tmp)) {
-
-		result->ptr_gpu = tmp;
-	} else
+	if (cuda_ondevice(tmp))
+		result->ptr_gpu[cuda_get_device()] = tmp;
+	else
 #endif
 	result->ptr_cpu = tmp;
 
@@ -127,15 +138,32 @@ struct multiplace_array_s* multiplace_move_F(int D, const long dimensions[D], si
 	auto result = multiplace_alloc(D, dimensions, size);
 	result->ptr_ref = (void*)ptr;
 
+	#pragma omp critical (bart_multiplace)
+	{
+	#ifdef USE_CUDA
+		if (cuda_ondevice(ptr)) {
+
+			result->ptr_gpu[cuda_get_device_num(ptr)] = (void*)ptr;
+			cuda_sync_device();
+		} else 
+	#endif
+		result->ptr_cpu = (void*)ptr;
+	}
+
+	return result;
+}
+
+struct multiplace_array_s* multiplace_move_wrapper(int D, const long dimensions[D], size_t size, const void* ptr)
+{
+
 #ifdef USE_CUDA
-	if (cuda_ondevice(ptr)) {
-
-		result->ptr_gpu = (void*)ptr;
-		cuda_sync_device();
-	} else 
+	assert (!cuda_ondevice(ptr));
 #endif
-	result->ptr_cpu = (void*)ptr;
 
+	auto result = multiplace_alloc(D, dimensions, size);
+	result->ptr_cpu = (void*)ptr;
+	result->ptr_ref = (void*)ptr;
+	result->free = false;
 	return result;
 }
 

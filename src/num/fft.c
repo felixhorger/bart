@@ -216,13 +216,6 @@ static void fftmod2_r(int N, const long dims[N], unsigned long flags, const long
 
 	struct cuda_threads_s* gpu_stat = gpu_threads_create(dst);
 
-#ifdef USE_CUDA
-	// FIXME: New threads initialize the 0 GPU by default
-	// As long as gpu_threads_enter is not implemented other active devices other than the 0th device will fail
-	// As a workaround use CUDA_VISIBLE_DEVICES environment variable to select a GPU and hide other GPUS by the driver 
-	assert((0 == cuda_get_device_internal_unchecked()) || !cuda_ondevice(dst));
-#endif
-
 	#pragma omp parallel for
 	for (int j = 0; j < dims[i]; j++) {
 
@@ -463,6 +456,7 @@ static void fft_apply(const operator_data_t* _plan, unsigned int N, void* args[N
 #ifdef  USE_CUDA
 	if (cuda_ondevice(src)) {
 #ifdef	LAZY_CUDA
+		#pragma omp critical(cufft_create_plan_in_threads)
 		if (NULL == plan->cuplan)
 			((struct fft_plan_s*)plan)->cuplan = fft_cuda_plan(plan->D, plan->dims, plan->flags, plan->ostrs, plan->istrs, plan->backwards);
 #endif
@@ -640,14 +634,14 @@ void ifft(int D, const long dimensions[D], unsigned long flags, complex float* d
 	fft_free(plan);
 }
 
-void fftc(int D, const long dimensions[__VLA(D)], unsigned long flags, complex float* dst, const complex float* src)
+void fftc(int D, const long dimensions[D], unsigned long flags, complex float* dst, const complex float* src)
 {
 	fftmod(D, dimensions, flags, dst, src);
 	fft(D, dimensions, flags, dst, dst);
 	fftmod(D, dimensions, flags, dst, dst);
 }
 
-void ifftc(int D, const long dimensions[__VLA(D)], unsigned long flags, complex float* dst, const complex float* src)
+void ifftc(int D, const long dimensions[D], unsigned long flags, complex float* dst, const complex float* src)
 {
 	ifftmod(D, dimensions, flags, dst, src);
 	ifft(D, dimensions, flags, dst, dst);
@@ -668,13 +662,13 @@ void ifftc2(int D, const long dimensions[D], unsigned long flags, const long ost
 	ifftmod2(D, dimensions, flags, ostrides, dst, ostrides, dst);
 }
 
-void fftu(int D, const long dimensions[__VLA(D)], unsigned long flags, complex float* dst, const complex float* src)
+void fftu(int D, const long dimensions[D], unsigned long flags, complex float* dst, const complex float* src)
 {
 	fft(D, dimensions, flags, dst, src);
 	fftscale(D, dimensions, flags, dst, dst);
 }
 
-void ifftu(int D, const long dimensions[__VLA(D)], unsigned long flags, complex float* dst, const complex float* src)
+void ifftu(int D, const long dimensions[D], unsigned long flags, complex float* dst, const complex float* src)
 {
 	ifft(D, dimensions, flags, dst, src);
 	fftscale(D, dimensions, flags, dst, dst);
@@ -692,13 +686,13 @@ void ifftu2(int D, const long dimensions[D], unsigned long flags, const long ost
 	fftscale2(D, dimensions, flags, ostrides, dst, ostrides, dst);
 }
 
-void fftuc(int D, const long dimensions[__VLA(D)], unsigned long flags, complex float* dst, const complex float* src)
+void fftuc(int D, const long dimensions[D], unsigned long flags, complex float* dst, const complex float* src)
 {
 	fftc(D, dimensions, flags, dst, src);
 	fftscale(D, dimensions, flags, dst, dst);
 }
 
-void ifftuc(int D, const long dimensions[__VLA(D)], unsigned long flags, complex float* dst, const complex float* src)
+void ifftuc(int D, const long dimensions[D], unsigned long flags, complex float* dst, const complex float* src)
 {
 	ifftc(D, dimensions, flags, dst, src);
 	fftscale(D, dimensions, flags, dst, dst);

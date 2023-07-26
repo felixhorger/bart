@@ -101,7 +101,7 @@ extern void print_complex(int D, const _Complex float arr[__VLA(D)]);
 extern int bitcount(unsigned long flags);
 
 extern const char* command_line;
-extern void save_command_line(int argc, char* argv[__VLA(argc)]);
+extern void* save_command_line(int argc, char* argv[__VLA(argc)]);
 
 extern _Bool safe_isnanf(float x);
 extern _Bool safe_isfinite(float x);
@@ -111,6 +111,11 @@ extern long io_calc_size(int D, const long dims[__VLA(D?:1)], size_t size);
 extern const char* ptr_printf(const char* fmt, ...);
 extern const char* ptr_vprintf(const char* fmt, va_list ap);
 extern const char* ptr_print_dims(int D, const long dims[__VLA(D)]);
+
+
+#define DEG2RAD(d) ((d) * M_PI / 180.)
+#define RAD2DEG(r) ((r) / M_PI * 180.)
+
 
 #include "misc/cppwrap.h"
 

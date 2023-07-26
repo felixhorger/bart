@@ -176,6 +176,7 @@ int main_nlinv(int argc, char* argv[argc])
 		if (0 == my_img_dims[0] + my_img_dims[1] + my_img_dims[2]) {
 
 			estimate_fast_sq_im_dims(3, dims, trj_dims, traj);
+
 		} else {
 
 			md_copy_dims(3, dims, my_img_dims);
@@ -184,12 +185,7 @@ int main_nlinv(int argc, char* argv[argc])
 				if (1 != dims[i])
 					dims[i] *= oversampling;
 		}
-
 #endif
-
-
-
-
 	}	
 
 	// for ENLIVE maps
@@ -241,7 +237,7 @@ int main_nlinv(int argc, char* argv[argc])
 	complex float* mask = NULL;
 
 	complex float* ksens = md_alloc(DIMS, sens_dims, CFL_SIZE);
-	complex float* sens = ((NULL != sens_file) ? create_cfl : anon_cfl)((NULL != sens_file) ? sens_file : "", DIMS, sens_dims);
+	complex float* sens = ((NULL != sens_file) ? create_cfl : anon_cfl)(sens_file, DIMS, sens_dims);
 
 	// initialization
 	if (NULL != init_file) {
@@ -346,6 +342,7 @@ int main_nlinv(int argc, char* argv[argc])
 		if (!use_compat_to_version("v0.7.00")) {
 
 			float sc = 1.;
+
 			for (int i = 0; i < 3; i++)
 				if (1 != dims[i])
 					sc *= 2.;

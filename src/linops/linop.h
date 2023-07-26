@@ -114,7 +114,8 @@ extern struct linop_s* linop_copy_wrapper2(int DI, const long istrs[DI], int DO,
 extern struct linop_s* linop_copy_wrapper(unsigned int D, const long istrs[D], const long ostrs[D], struct linop_s* op);
 extern struct linop_s* linop_gpu_wrapper(struct linop_s* op);
 
-
+extern struct linop_s* linop_assign_gpu(const struct linop_s* op, int device);
+extern struct linop_s* linop_assign_gpu_F(const struct linop_s* op, int device);
 
 
 extern struct linop_s* linop_null_create2(unsigned int NO, const long odims[NO], const long ostrs[NO], unsigned int NI, const long idims[NI], const long istrs[NI]);
@@ -132,6 +133,7 @@ extern struct linop_s* linop_reshape_out_F(const struct linop_s* op, unsigned in
 
 
 extern struct linop_s* graph_optimize_linop(const struct linop_s* op);
+extern const struct operator_s* graph_optimize_operator_linop_F(const struct operator_s* op);
 
 void operator_linops_apply_joined_unchecked(unsigned int N, const struct operator_s* op[N], complex float* dst[N], const complex float* src);
 

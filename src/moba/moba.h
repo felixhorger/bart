@@ -41,6 +41,12 @@ struct moba_conf {
 	float sobolev_b;
 	bool noncartesian;
         bool sms;
+	unsigned long not_wav_maps;
+	unsigned long constrained_maps;
+	unsigned long l2para;
+	unsigned int pusteps;
+	float ratio;
+	float l1val;
 
 	// T1
 	float scaling_M0;
@@ -72,6 +78,12 @@ struct moba_other_conf {
         float fov_reduction_factor;
         float scale[4];
 	float initval[4];
+	float b1_sobolev_a;
+	float b1_sobolev_b;
+
+	bool no_sens_l2;
+	bool no_sens_deriv;
+	bool export_ksp_coils;
 
 	int tvscales_N;
 	complex float tvscales[4];

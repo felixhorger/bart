@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <assert.h>
+#include <math.h>
 
 #include "misc/debug.h"
 #include "misc/misc.h"
@@ -66,6 +67,8 @@ static void post_process(enum mdb_t mode, const struct linop_s* op, struct moba_
 
 	if (MDB_T1_PHY == mode) {
 
+		float r1p_nom = read_relax(data->sim.seq.tr, DEG2RAD(data->sim.pulse.flipangle));
+
 		md_set_dims(DIMS, pos, 0);
 
 		pos[COEFF_DIM] = 2;
@@ -78,7 +81,14 @@ static void post_process(enum mdb_t mode, const struct linop_s* op, struct moba_
 
 		md_zreal(DIMS, map_dims, tmp, tmp);
 
-		md_zsmul(DIMS, map_dims, tmp, tmp, -data->sim.seq.tr * 0.2);    // 0.2 -> Same scaling set in T1phyfun.c
+		md_zsmul(DIMS, map_dims, tmp, tmp, data->other.scale[2]);
+
+		complex float* offset = md_alloc_sameplace(DIMS, map_dims, CFL_SIZE, img);
+
+		md_zfill(DIMS, map_dims, offset, r1p_nom);
+		md_zadd(DIMS, map_dims, tmp, tmp, offset);
+
+		md_zsmul(DIMS, map_dims, tmp, tmp, -data->sim.seq.tr);    // Same scaling set in T1phyfun.c
 
 		md_smin(1, MD_DIMS(2 * map_size), (float*)tmp, (float*)tmp, 0.);
 
@@ -89,15 +99,16 @@ static void post_process(enum mdb_t mode, const struct linop_s* op, struct moba_
 	        md_zsmul(DIMS, map_dims, tmp, tmp, 180. / M_PI);        // output the effective flip angle map (in degree!)
 
 		md_copy_block(DIMS, pos, imgs_dims, img, map_dims, tmp, CFL_SIZE);
+
+		md_free(offset);
 	}
 
 	md_free(tmp);
 }
 
 
-static void set_bloch_conf(enum mdb_t mode, struct mdb_irgnm_l1_conf* conf2, struct moba_conf_s* data)
+static void set_bloch_conf(enum mdb_t mode, struct mdb_irgnm_l1_conf* conf2, const struct moba_conf* conf, struct moba_conf_s* data)
 {
-
 	// T2 estimation turned off for IR FLASH Simulation
 
         if (MDB_BLOCH == mode) {
@@ -106,13 +117,15 @@ static void set_bloch_conf(enum mdb_t mode, struct mdb_irgnm_l1_conf* conf2, str
 
                 if (SEQ_IRFLASH == data->sim.seq.seq_type) {
 
-                        conf2->constrained_maps = 1;	// only R1 map: bitmask (1 0 0 0) = 1
-                        conf2->not_wav_maps = 2;	// no wavelet for T2 and B1 map
+			conf2->l2flags = (0 != data->other.scale[3]) ? ((0 == conf->l2para) ? 8 : conf->l2para) : 0;
+                        conf2->constrained_maps = (0 == conf->constrained_maps) ? 1 : conf->constrained_maps;	// only R1 map: bitmask (1 0 0 0) = 1
+                        conf2->not_wav_maps = (0 == conf->not_wav_maps) ? 2 : conf->not_wav_maps; // no wavelet for T2 and B1 map
                 }
                 else if (SEQ_IRBSSFP == data->sim.seq.seq_type) {
 
-                        conf2->constrained_maps = 5;	// only T1 and T2: bitmask(1 0 1 0) = 5
-                        conf2->not_wav_maps = 1;	// no wavelet for B1 map
+			conf2->l2flags = (0 == conf->l2para) ? 0 : conf->l2para;
+                        conf2->constrained_maps = (0 == conf->constrained_maps) ? 5 : conf->constrained_maps;	// only T1 and T2: bitmask(1 0 1 0) = 5
+                        conf2->not_wav_maps = (0 == conf->not_wav_maps) ? 1 : conf->not_wav_maps; // no wavelet for B1 map
                 }
         }
 
@@ -120,8 +133,9 @@ static void set_bloch_conf(enum mdb_t mode, struct mdb_irgnm_l1_conf* conf2, str
 
         if (MDB_T1_PHY == mode) {
 
-                conf2->constrained_maps = 2;     // only R1 map: bitmask (0 1 0) = 2
-                conf2->not_wav_maps = 1;
+		conf2->l2flags = (0 == conf->l2para) ? 4 : conf->l2para;
+                conf2->constrained_maps = (0 == conf->constrained_maps) ? 2 : conf->constrained_maps;    // only R1 map: bitmask (0 1 0) = 2
+                conf2->not_wav_maps = (0 == conf->not_wav_maps) ? 1 : conf->not_wav_maps;	// no wavelet for R1' map
         }
 
 	conf2->tvscales_N = data->other.tvscales_N;
@@ -135,7 +149,7 @@ static struct mobamod exp_create(const long dims[DIMS], const complex float* mas
 	long data_dims[DIMS];
 	md_select_dims(DIMS, ~COEFF_FLAG, data_dims, dims);
 
-	struct noir_s nlinv = noir_create3(data_dims, mask, psf, conf);
+	struct noir_s nlinv = noir_create(data_dims, mask, psf, conf);
 	struct mobamod ret;
 
 	assert(2 == dims[COEFF_DIM]);
@@ -176,6 +190,7 @@ static void recon(const struct moba_conf* conf, struct moba_conf_s* data,
 		const complex float* mask,
 		const complex float* TI,
 		const complex float* b1,
+		const complex float* b0,
 		const long data_dims[DIMS], const complex float* kspace_data, bool usegpu)
 {
 	unsigned int fft_flags = FFT_FLAGS;
@@ -222,7 +237,7 @@ static void recon(const struct moba_conf* conf, struct moba_conf_s* data,
         case MDB_T1_PHY:
         case MDB_BLOCH:
 
-                nl = moba_create(dims, mask, TI, b1, pattern, &mconf, data, usegpu);
+                nl = moba_create(dims, mask, TI, b1, b0, pattern, &mconf, data, usegpu);
                 break;
 	}
 
@@ -270,16 +285,20 @@ static void recon(const struct moba_conf* conf, struct moba_conf_s* data,
 		.opt_reg = conf->opt_reg,
 		.step = conf->step,
 		.lower_bound = conf->lower_bound,
-		.l2flags = (1 == conf->opt_reg) ? (0UL) : ~(0UL),
-		.constrained_maps = 1UL << (dims[COEFF_DIM] - 1), // Always constrain last parameter map as default
+		.l2flags = (0 == conf->l2para) ? ((1 == conf->opt_reg) ? (0UL) : ~(0UL)) : conf->l2para,
+		.constrained_maps = (0 == conf->constrained_maps) ? (1UL << (dims[COEFF_DIM] - 1)) : conf->constrained_maps, // Always constrain last parameter map as default
 		.auto_norm = conf->auto_norm,
-                .not_wav_maps = 0,
+		.no_sens_l2 = data->other.no_sens_l2,
+                .not_wav_maps = (0 == conf->not_wav_maps) ? 0 : conf->not_wav_maps,
 		.algo = conf->algo,
 		.rho = conf->rho,
-		.ropts = conf->ropts
+		.ropts = conf->ropts,
+		.l1val = conf->l1val,
+		.pusteps = conf->pusteps,
+		.ratio = conf->ratio,
 	};
 
-        set_bloch_conf(conf->mode, &conf2, data);
+        set_bloch_conf(conf->mode, &conf2, conf, data);
 
 	long irgnm_conf_dims[DIMS];
 	md_select_dims(DIMS, fft_flags|MAPS_FLAG|COEFF_FLAG|TIME_FLAG|TIME2_FLAG, irgnm_conf_dims, imgs_dims);
@@ -300,9 +319,16 @@ static void recon(const struct moba_conf* conf, struct moba_conf_s* data,
 
 	if (NULL != sens) {
 
-		noir_forw_coils(nl.linop, x + skip, x + skip);
-		md_copy(DIMS, coil_dims, sens, x + skip, CFL_SIZE);
-		fftmod(DIMS, coil_dims, fft_flags, sens, sens);
+		if (data->other.export_ksp_coils) {
+
+			md_copy(DIMS, coil_dims, sens, x + skip, CFL_SIZE);
+
+		} else {
+
+			noir_forw_coils(nl.linop, x + skip, x + skip);
+			md_copy(DIMS, coil_dims, sens, x + skip, CFL_SIZE);
+			fftmod(DIMS, coil_dims, fft_flags, sens, sens);
+		}
 	}
 
 	post_process(conf->mode, nl.linop_alpha, data, dims, img);
@@ -318,7 +344,7 @@ static void recon(const struct moba_conf* conf, struct moba_conf_s* data,
 }
 
 
-void moba_recon(const struct moba_conf* conf, struct moba_conf_s* data, const long dims[DIMS], complex float* img, complex float* sens, const complex float* pattern, const complex float* mask, const complex float* TI, const complex float* b1, const complex float* kspace_data, const complex float* init)
+void moba_recon(const struct moba_conf* conf, struct moba_conf_s* data, const long dims[DIMS], complex float* img, complex float* sens, const complex float* pattern, const complex float* mask, const complex float* TI, const complex float* b1, const complex float* b0, const complex float* kspace_data, const complex float* init)
 {
 	long imgs_dims[DIMS];
 	long coil_dims[DIMS];
@@ -344,7 +370,7 @@ void moba_recon(const struct moba_conf* conf, struct moba_conf_s* data, const lo
         case MDB_BLOCH:
 
 		assert(NULL == init);
-		recon(conf, data, dims, imgs_dims, img, coil_dims, sens, pattern, mask, TI, b1, data_dims, kspace_data, conf->use_gpu);
+		recon(conf, data, dims, imgs_dims, img, coil_dims, sens, pattern, mask, TI, b1, b0, data_dims, kspace_data, conf->use_gpu);
 		break;
 
 	case MDB_MGRE:
@@ -356,3 +382,4 @@ void moba_recon(const struct moba_conf* conf, struct moba_conf_s* data, const lo
 		assert(0);
 	}
 }
+

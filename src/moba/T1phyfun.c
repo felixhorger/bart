@@ -7,6 +7,7 @@
  */
 
 #include <complex.h>
+#include <math.h>
 
 #include "misc/types.h"
 #include "misc/misc.h"
@@ -21,6 +22,8 @@
 #include "linops/someops.h"
 
 #include "nlops/nlop.h"
+
+#include "moba/moba.h"
 
 #include "noir/utils.h"
 
@@ -65,6 +68,7 @@ struct T1_phy_s {
 	const struct linop_s* linop_alpha;
 
 	float scaling_alpha;
+	float r1p_nom;
 
 	int counter;
 };
@@ -89,6 +93,18 @@ void T1_back_alpha(const struct linop_s* op, complex float* dst, const complex f
 	linop_adjoint_unchecked(op, dst, src);
 }
 
+/**
+ * Readout relaxation rate for reparameterized Look-Locker model
+ * Roeloffs, V., Wang, X., Sumpf, T.J., Untenberger, M., Voit, D. and Frahm, J. (2016),
+ * Model-based reconstruction for T1 mapping using single-shot inversion-recovery radial FLASH.
+ * Int. J. Imaging Syst. Technol., 26: 254-263. https://doi.org/10.1002/ima.22196z
+ * @param tr 	repetition time [s]
+ * @param angle flip angle [rad]
+ */
+float read_relax(float tr, float angle)
+{
+	return -1. / tr * logf(cosf(angle));
+}
 
 // Calculate Model: M0 * (R1/(R1 + alpha) - (1 + R1/(R1 + alpha)) * exp(-t.*(R1 + alpha)))
 static void T1_fun(const nlop_data_t* _data, complex float* dst, const complex float* src)
@@ -128,8 +144,12 @@ static void T1_fun(const nlop_data_t* _data, complex float* dst, const complex f
 
 	T1_forw_alpha(data->linop_alpha, data->tmp_map, data->alpha);
 
-	// R1s = R1 + alpha * scaling_alpha
+	// R1p_nom = -ln(cos(fa_nom))/tr = alpha_nom -> Sobolev on r1p around 0 instead of 1
+	md_zfill(data->N, data->map_dims, data->tmp_ones, data->r1p_nom);
+
+	// R1s = R1 + (1 + alpha * scaling_alpha)
 	md_zsmul(data->N, data->map_dims, data->tmp_R1s, data->tmp_map, data->scaling_alpha);
+	md_zadd(data->N, data->map_dims, data->tmp_R1s, data->tmp_ones, data->tmp_R1s);
 	md_zadd(data->N, data->map_dims, data->tmp_R1s, data->R1, data->tmp_R1s);
 
 	// exp(-t.* (R1 + alpha * scaling_alpha)):
@@ -295,7 +315,7 @@ static void T1_del(const nlop_data_t* _data)
 }
 
 
-struct nlop_s* nlop_T1_phy_create(int N, const long map_dims[N], const long out_dims[N], const long in_dims[N], const long TI_dims[N], const complex float* TI, bool use_gpu)
+struct nlop_s* nlop_T1_phy_create(int N, const long map_dims[N], const long out_dims[N], const long in_dims[N], const long TI_dims[N], const complex float* TI,  const struct moba_conf_s* config, bool use_gpu)
 {
 #ifdef USE_CUDA
 	md_alloc_fun_t my_alloc = use_gpu ? md_alloc_gpu : md_alloc;
@@ -362,7 +382,7 @@ struct nlop_s* nlop_T1_phy_create(int N, const long map_dims[N], const long out_
 
 	data->weights = md_alloc(N, w_dims, CFL_SIZE);
 
-	noir_calc_weights(44., 10., w_dims, data->weights);
+	noir_calc_weights(config->other.b1_sobolev_a, config->other.b1_sobolev_b, w_dims, data->weights);
 
 	const struct linop_s* linop_wghts = linop_cdiag_create(N, map_dims, FFT_FLAGS, data->weights);
 	const struct linop_s* linop_ifftc = linop_ifftc_create(N, map_dims, FFT_FLAGS);
@@ -372,10 +392,9 @@ struct nlop_s* nlop_T1_phy_create(int N, const long map_dims[N], const long out_
 	linop_free(linop_wghts);
 	linop_free(linop_ifftc);
 
-	data->scaling_alpha = 0.2;
+	data->scaling_alpha = config->other.scale[2];
+	data->r1p_nom = read_relax(config->sim.seq.tr, DEG2RAD(config->sim.pulse.flipangle));
 
 	data->counter = 0;
 	return nlop_create(N, out_dims, N, in_dims, CAST_UP(PTR_PASS(data)), T1_fun, T1_der, T1_adj, NULL, NULL, T1_del);
 }
-
-

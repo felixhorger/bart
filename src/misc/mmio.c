@@ -58,10 +58,10 @@ static void io_error(const char* fmt, ...)
 	debug_vprintf_trace("error", __FILE__, __LINE__, DP_ERROR, fmt, ap);
 	va_end(ap);
 #else
+	perror(" ");
 	vfprintf(stderr, fmt, ap);
 	va_end(ap);
 	fflush(stderr);
-	perror(" ");
 #endif
 #else
 	if (NULL == PyErr_Occurred()) {
@@ -494,7 +494,7 @@ complex float* shared_cfl(int D, const long dims[D], const char* name)
 
 	err_assert(T > 0);
 
-        if (-1 == (fd = open(name, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR)))
+        if (-1 == (fd = open(name, O_RDWR|O_CREAT, 0666 /* octal */)))
 		io_error("shared cfl %s\n", name);
 
 //	if (-1 == (fstat(fd, &st)))
@@ -592,7 +592,7 @@ complex float* private_cfl(int D, const long dims[D], const char* name)
 }
 
 
-void unmap_cfl(int D, const long dims[D?:1], const complex float* x)
+void unmap_cfl(int D, const long dims[D], const complex float* x)
 {
 	if (memcfl_unmap(x))
 		return;
@@ -668,7 +668,7 @@ void create_multi_cfl(const char* name, int N, int D[N], const long* dimensions[
 #endif /* MEMONLY_CFL */
 }
 
-static int load_multi_cfl_internal(const char* name, int N_max, int D_max, int D[__VLA(N_max)], long dimensions[__VLA(N_max)][D_max], _Complex float* args[__VLA(N_max)], bool priv)
+static int load_multi_cfl_internal(const char* name, int N_max, int D_max, int D[N_max], long dimensions[N_max][D_max], _Complex float* args[N_max], bool priv)
 {
 	io_register_input(name);
 
