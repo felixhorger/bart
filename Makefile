@@ -25,7 +25,7 @@ NON_DETERMINISTIC?=0
 BLAS_THREADSAFE?=0
 
 # use for ppc64le HPC
-OPENBLAS?=0
+OPENBLAS?=1
 MKL?=0
 CUDA?=0
 CUDNN?=0
@@ -853,10 +853,10 @@ utest_gpu: utests_gpu-all
 
 # shared library
 shared-lib:
-	make allclean
+	#make allclean
 	CFLAGS="-fPIC $(OPT) -Wmissing-prototypes" make
 	gcc -shared -fopenmp -o libbart.so src/bart.o -Wl,-whole-archive lib/lib*.a -Wl,-no-whole-archive -Wl,-Bdynamic $(FFTW_L) $(CUDA_L) $(BLAS_L) $(PNG_L) $(ISMRM_L) $(LIBS) -lm -lrt
-	make allclean
+	#make allclean
 
 endif	# MAKESTAGE
 
