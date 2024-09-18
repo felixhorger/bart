@@ -34,6 +34,7 @@ extern void calib(const struct ecalib_conf* conf, const long out_dims[DIMS], _Co
 			int SN, float svals[__VLA2(SN)], const long calreg_dims[DIMS], const _Complex float* calreg_data);
 
 extern void calib2(const struct ecalib_conf* conf, const long out_dims[DIMS], _Complex float* out_data, _Complex float* eptr, int SN, float svals[__VLA2(SN)], const long calreg_dims[DIMS], const _Complex float* data, const long msk_dims[3], const _Bool* msk);
+extern complex float* ecalib(complex float* in_data, long ksp_dims[DIMS], long calsize[3], int maps, struct ecalib_conf conf);
 
 extern void eigenmaps(const long out_dims[DIMS], _Complex float* out_data, _Complex float* eptr, const _Complex float* imgcov, const long msk_dims[3], const _Bool* msk, _Bool orthiter, int num_orthiter, _Bool usegpu);
 

@@ -251,17 +251,19 @@ int main_ecalib(int argc, char* argv[argc])
 	return 0;
 }
 
-
-int ecalib(complex float* in_data, long ksp_dims[DIMS]);
-int ecalib(complex float* in_data, long ksp_dims[DIMS])
+complex float* ecalib(
+	complex float* in_data,
+	long ksp_dims[DIMS],
+	long calsize[3],
+	int maps,
+	struct ecalib_conf conf
+)
 {
-	long calsize[3] = { 24, 24, 24 };
-	int maps = 2;
+	//long calsize[3] = { 24, 24, 24 };
+	//int maps = 2;
 	bool one = false;
 	bool calcen = false;
 	bool print_svals = false;
-
-	struct ecalib_conf conf = ecalib_defaults;
 
 	if (-1. != conf.percentsv)
 		conf.threshold = -1.;
@@ -343,6 +345,8 @@ int ecalib(complex float* in_data, long ksp_dims[DIMS])
 		conf.var = estvar_calreg(toolbox, conf.kdims, cal_dims, cal_data);
 	}
 
+	complex float* out_data;
+	complex float* emaps;
 	if (one) {
 
 //#if 0
@@ -393,8 +397,8 @@ int ecalib(complex float* in_data, long ksp_dims[DIMS])
 		map_dims[COIL_DIM] = 1;
 		map_dims[MAPS_DIM] = maps;
 
-		complex float* out_data = (complex float*)malloc(io_calc_size(DIMS, out_dims, sizeof(complex float)));
-		complex float* emaps = (complex float*)malloc(io_calc_size(DIMS, map_dims, sizeof(complex float)));
+		out_data = (complex float*)malloc(io_calc_size(DIMS, out_dims, sizeof(complex float)));
+		emaps = (complex float*)malloc(io_calc_size(DIMS, map_dims, sizeof(complex float)));
 
 		calib(&conf, out_dims, out_data, emaps, K, svals, cal_dims, cal_data);
 		free(emaps);
@@ -414,5 +418,5 @@ int ecalib(complex float* in_data, long ksp_dims[DIMS])
 
 	md_free(cal_data);
 
-	return 0;
+	return out_data;
 }
